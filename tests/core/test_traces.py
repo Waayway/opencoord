@@ -5,7 +5,13 @@ from hypothesis import given
 from hypothesis import strategies as st
 from hypothesis.extra import numpy as hnp
 
-from opencoord.core.traces import TraceSet, detected_carriers, find_peaks, noise_floor
+from opencoord.core.traces import (
+    TraceSet,
+    _prominence,
+    detected_carriers,
+    find_peaks,
+    noise_floor,
+)
 from opencoord.core.types import Carrier, Sweep, Trace
 
 
@@ -128,11 +134,11 @@ def test_traces_do_not_alias_input_or_each_other() -> None:
     assert first_max is not None and first_max.dbm[0] == -90.0  # old object not mutated
 
 
-@given(st.lists(st.integers(0, 10**6), min_size=1, max_size=12), st.integers(1, 5), st.data())
-def test_invariants(seeds: list[int], n_avg: int, data: st.DataObject) -> None:
+@given(st.integers(1, 12), st.integers(1, 5), st.data())
+def test_invariants(sweeps: int, n_avg: int, data: st.DataObject) -> None:
     n = data.draw(st.integers(1, 6))
     ts = TraceSet(average_count=n_avg)
-    for _ in seeds:
+    for _ in range(sweeps):
         dbm = data.draw(
             hnp.arrays(np.float32, n, elements=st.floats(-130, 0, width=32, allow_nan=False))
         )
@@ -203,9 +209,8 @@ def test_find_peaks_prominence_uses_higher_base() -> None:
     dbm = np.full(21, -100.0, dtype=np.float32)
     dbm[5], dbm[10], dbm[15] = -40, -45, -50
     dbm[6:10] = -48
-    # peak at 5: prominence 60 (nothing higher; left base -100). Peak at 10 (-45): left walks to 5
-    # (higher), min between = -100? No: min between 5 and 10 is -48 -> base -48; right base -100.
-    # prominence = -45 - max(-48, -100) = 3
+    # Peak at 10 (-45): the nearest higher sample on the left is at 5 and the minimum in between
+    # is -48, so its left base is -48; its right base is -100. Prominence = -45 - (-48) = 3 dB.
     assert find_peaks(_freqs(21), dbm, min_prominence_db=4, min_spacing_hz=0) == [5, 15]
     assert 10 in find_peaks(_freqs(21), dbm, min_prominence_db=3, min_spacing_hz=0)
 
@@ -267,3 +272,70 @@ def test_detected_carriers_above_threshold_sorted_by_frequency() -> None:
 def test_detected_carriers_none_in_noise() -> None:
     trace = Trace(_freqs(20), np.full(20, -100.0, dtype=np.float32), "x")
     assert detected_carriers(trace, -100.0, 6.0) == []
+
+
+def test_find_peaks_spacing_zero_and_positive_agree_on_far_apart_peaks() -> None:
+    dbm = np.full(50, -100.0, dtype=np.float32)
+    dbm[[5, 20, 40]] = [-50, -60, -70]
+    assert find_peaks(_freqs(50), dbm, 10, 0) == find_peaks(_freqs(50), dbm, 10, 100_000)
+
+
+# --- hardening ----------------------------------------------------------------------------------
+
+
+def test_published_arrays_are_read_only_and_average_window_is_private() -> None:
+    ts = TraceSet(average_count=2)
+    ts.update(_sweep([-90.0, -80.0]))
+    for tr in (ts.live, ts.max_hold, ts.average, ts.min_hold):
+        assert tr is not None
+        assert not tr.dbm.flags.writeable and not tr.freqs_hz.flags.writeable
+    ts.update(_sweep([-70.0, -60.0]))
+    assert ts.average is not None
+    np.testing.assert_allclose(ts.average.dbm, [-80.0, -70.0])
+
+
+@pytest.mark.parametrize("bad", [np.nan, np.inf, -np.inf])
+def test_update_rejects_non_finite(bad: float) -> None:
+    ts = TraceSet()
+    with pytest.raises(ValueError):
+        ts.update(_sweep([-90.0, bad]))
+    assert ts.live is None
+
+
+@given(hnp.arrays(np.float64, st.integers(1, 12), elements=st.integers(-5, 5).map(float)))
+def test_prominence_matches_brute_force(arr: npt.NDArray[np.float64]) -> None:
+    # Adjacent equal samples are collapsed (as find_peaks does) before computing prominence.
+    keep = np.concatenate(([True], np.diff(arr) != 0))
+    v = arr[keep].tolist()
+    n = len(v)
+    expected = []
+    for i in range(n):
+        lo = hi = -np.inf  # a side with no samples is ignored
+        if i > 0:
+            j = i - 1
+            while j >= 0 and v[j] <= v[i]:
+                j -= 1
+            lo = min(v[max(j, 0) : i + 1])
+        if i < n - 1:
+            j = i + 1
+            while j < n and v[j] <= v[i]:
+                j += 1
+            hi = min(v[i : min(j, n - 1) + 1])
+        expected.append(v[i] - max(lo, hi))
+    assert _prominence(v) == expected
+
+
+# --- performance --------------------------------------------------------------------------------
+
+
+def test_peak_detection_scales_on_noisy_50k_trace() -> None:
+    import time
+
+    rng = np.random.default_rng(0)
+    n = 50_000
+    trace = Trace(_freqs(n, step=10e3), rng.normal(-100, 3, n).astype(np.float32), "noisy")
+    t0 = time.perf_counter()
+    find_peaks(trace.freqs_hz, trace.dbm, 3.0, 0)
+    find_peaks(trace.freqs_hz, trace.dbm, 3.0, 50e3)
+    detected_carriers(trace, -100.0, 6.0)
+    assert time.perf_counter() - t0 < 3.0  # generous: ~0.1 s expected; guards O(n^2) regressions

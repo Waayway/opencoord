@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+from bisect import bisect_left, insort
 from collections import deque
 
 import numpy as np
@@ -19,6 +20,10 @@ NOISE_FLOOR_PERCENTILE = 20.0
 CARRIER_MIN_PROMINENCE_DB = 3.0
 
 
+def _frozen(a: npt.NDArray[np.generic]) -> None:
+    a.setflags(write=False)
+
+
 class TraceSet:
     """Live, max-hold, average and min-hold traces built from successive sweeps.
 
@@ -30,7 +35,9 @@ class TraceSet:
     * A sweep whose axis differs from the current one (different length, start or stop)
       resets every trace and starts over with that sweep.
 
-    Trace objects are never mutated after being published; each update creates new arrays.
+    Trace objects are never mutated after being published; each update creates new arrays, and
+    the published arrays are read-only. Sweeps containing non-finite levels (NaN/inf) are rejected
+    with ``ValueError`` because they would permanently poison the running average.
     """
 
     def __init__(self, average_count: int = 10) -> None:
@@ -78,21 +85,28 @@ class TraceSet:
             raise ValueError("sweep must have a non-empty axis matching its levels")
         if not self._same_axis(sweep.freqs_hz):
             self.reset()
+        if not np.all(np.isfinite(sweep.dbm)):
+            raise ValueError("sweep contains non-finite levels")
         dbm = np.array(sweep.dbm, dtype=np.float32)  # private copy
         if self._freqs is None:
             self._freqs = np.array(sweep.freqs_hz, dtype=np.float64)
+            _frozen(self._freqs)
         freqs = self._freqs
-        self.live = Trace(freqs, dbm, "Live")
         if self.max_hold is None or self.min_hold is None:
-            self.max_hold = Trace(freqs, dbm.copy(), "Max hold")
-            self.min_hold = Trace(freqs, dbm.copy(), "Min hold")
+            max_dbm, min_dbm = dbm.copy(), dbm.copy()
         else:
-            self.max_hold = Trace(freqs, np.maximum(self.max_hold.dbm, dbm), "Max hold")
-            self.min_hold = Trace(freqs, np.minimum(self.min_hold.dbm, dbm), "Min hold")
+            max_dbm = np.maximum(self.max_hold.dbm, dbm)
+            min_dbm = np.minimum(self.min_hold.dbm, dbm)
+        window_copy = dbm.copy()  # the average window is private; callers never see it
+        for arr in (dbm, max_dbm, min_dbm, window_copy):
+            _frozen(arr)
+        self.live = Trace(freqs, dbm, "Live")
+        self.max_hold = Trace(freqs, max_dbm, "Max hold")
+        self.min_hold = Trace(freqs, min_dbm, "Min hold")
         if self._sum is None:
             self._sum = np.zeros(len(dbm), dtype=np.float64)
-        self._window.append(dbm)
-        self._sum += dbm
+        self._window.append(window_copy)
+        self._sum += window_copy
         while len(self._window) > self._average_count:
             self._sum -= self._window.popleft()
         self._publish_average()
@@ -109,6 +123,7 @@ class TraceSet:
         if self.min_hold is not None and self.max_hold is not None:
             # Guard against float64 running-sum rounding residue (e.g. after cancellation).
             mean = np.clip(mean, self.min_hold.dbm, self.max_hold.dbm)
+        _frozen(mean)
         self.average = Trace(self._freqs, mean, "Average")
 
 
@@ -170,16 +185,11 @@ def find_peaks(
     if n == 0:
         return []
     # Collapse flat runs so that plateaus (e.g. DVB-T blocks) are single samples.
-    run_vals: list[float] = []
-    run_mid: list[int] = []
-    i = 0
-    while i < n:
-        j = i
-        while j + 1 < n and dbm[j + 1] == dbm[i]:
-            j += 1
-        run_vals.append(float(dbm[i]))
-        run_mid.append((i + j) // 2)
-        i = j + 1
+    breaks = np.flatnonzero(np.diff(dbm) != 0)
+    starts = np.concatenate(([0], breaks + 1))
+    ends = np.concatenate((breaks, [n - 1]))
+    run_mid = ((starts + ends) // 2).tolist()
+    run_vals = [float(x) for x in dbm[starts]]
     if len(run_vals) == 1:
         return [run_mid[0]] if n == 1 else []
     prom = _prominence(run_vals)
@@ -192,10 +202,20 @@ def find_peaks(
         and prom[r] >= min_prominence_db
     ]
     candidates.sort(key=lambda k: (-float(dbm[k]), k))
+    if min_spacing_hz <= 0:
+        return candidates
+    # Accept strongest first; only the two nearest accepted neighbours (by frequency) matter.
     accepted: list[int] = []
+    accepted_freqs: list[float] = []  # sorted
     for k in candidates:
-        if all(abs(float(freqs_hz[k]) - float(freqs_hz[a])) >= min_spacing_hz for a in accepted):
-            accepted.append(k)
+        f = float(freqs_hz[k])
+        pos = bisect_left(accepted_freqs, f)
+        if pos > 0 and f - accepted_freqs[pos - 1] < min_spacing_hz:
+            continue
+        if pos < len(accepted_freqs) and accepted_freqs[pos] - f < min_spacing_hz:
+            continue
+        insort(accepted_freqs, f)
+        accepted.append(k)
     return accepted
 
 
