@@ -15,7 +15,9 @@ spacing = "generic-analog"   # preset name, or an inline [spacing] table
 carrier = 350
 im3_2tx = 100
 im3_3tx = 50
-im5_2tx = 0
+im5_2tx = 50
+im7_2tx = 50
+im5_3tx = 0                  # advanced, off by default
 ```
 - Templates: Generic analog mic, Generic IEM, Generic digital, Fixed-channel set.
 - Spacing is **data, never constants** (`coord/spacing.py`). Presets are TOML files in `<config>/spacing/`, seeded
@@ -28,9 +30,13 @@ im5_2tx = 0
 Products for carriers `f`:
 - 3rd order, 2-transmitter: `2·fi − fj`
 - 3rd order, 3-transmitter: `fi + fj − fk`
-- 5th order: `3·fi − 2·fj`
+- 5th order, 2-transmitter: `3·fi − 2·fj`
+- 7th order, 2-transmitter: `4·fi − 3·fj`
+- 5th order, 3-transmitter (advanced, off by default): `2·fi + fj − 2·fk`, …
 
-Vectorised with numpy broadcasting. Only products inside the union of tuning ranges ± max spacing are kept.
+**Defaults: 3rd + 5th + 7th on** in every seeded preset.
+Products are kept incrementally while the solver places carriers, because recomputing the O(n³) 3-Tx set each time
+is too slow. Vectorised with numpy broadcasting. Only products inside the union of tuning ranges ± max spacing are kept.
 
 ## Solver (`coord/solver.py`)
 Input: `CoordinationRequest`, which contains

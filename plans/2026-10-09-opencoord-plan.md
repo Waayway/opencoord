@@ -166,7 +166,7 @@ spacing = "generic-analog"   # preset name, or an inline [spacing] table
      *generic-analog*, *conservative*, *iem* and *digital*. Users can edit, clone, rename, delete, import and export
      presets in a **Spacing editor** panel. "Reset to built-in" restores the shipped values.
   2. **Per profile:** pick a preset, then optionally override individual values (carrier, 3rd-order 2Tx, 3rd-order
-     3Tx, 5th-order 2Tx, 7th-order 2Tx). Each value can be in kHz or 0 for disabled.
+     3Tx, 5th-order 2Tx, 7th-order 2Tx, advanced 5th-order 3Tx). Each value can be in kHz or 0 for disabled.
   3. **Per coordination run:** an optional global override (e.g. "tight mode" scaling all spacings by a factor, or
      forcing 5th order on).
 - **Resolution order:** run override → profile override → profile's preset. For a pair of different profiles the
@@ -175,9 +175,23 @@ spacing = "generic-analog"   # preset name, or an inline [spacing] table
   experience.
 
 ### 5.2 IMD engine (`imd.py`)
-For a candidate set *F*: 2-tone 3rd order `2f1−f2`; 3-tone 3rd order `f1+f2−f3`; optional 2-tone 5th order
-`3f1−2f2` (and 7th as an advanced option). Vectorised with numpy; products only computed within the union of
-profile tuning ranges (+ margin).
+**Default orders (decided 2026-10-09): 3rd + 5th + 7th**, on in every seeded preset. Each order can still be
+disabled or re-spaced per preset, profile or run (§5.1).
+
+| Order | Products | Default |
+|---|---|---|
+| 3rd, 2-Tx | `2f1 − f2` | on |
+| 3rd, 3-Tx | `f1 + f2 − f3` | on |
+| 5th, 2-Tx | `3f1 − 2f2` | on |
+| 7th, 2-Tx | `4f1 − 3f2` | on |
+| 5th, 3-Tx (`2f1 + f2 − 2f3`, …) | | off (advanced) |
+
+- Computed with vectorised numpy. Only products that land within the union of the profile tuning ranges, plus a
+  margin, are kept.
+- The 3-Tx set grows as O(n³), so products are maintained **incrementally** as the solver places each carrier.
+  They are never recomputed from scratch.
+- Performance target (Phase 7): 16 devices in 470–694 MHz with all default orders in under 5 s, and 40 devices
+  within the time budget. The solver returns the best partial result if the budget runs out.
 
 ### 5.3 Solver (`solver.py`)
 1. **Candidate grid** per profile: tuning ranges × step (or fixed channels).
@@ -386,8 +400,7 @@ wireless receivers (Shure/Sennheiser network protocols), mobile apps, manufactur
 
 1. ~~**Spacing defaults**~~: **Resolved:** fully configurable (editable presets + per-profile + per-run overrides,
    §5.1). The seeded values are starting points only.
-2. **IMD orders:** is 3rd-order (2Tx + 3Tx) enough by default, with 5th as an option? Or should 5th be on by default
-   for IEMs?
+2. ~~**IMD orders**~~: **Resolved:** 3rd (2Tx + 3Tx), 5th and 7th on by default, all configurable (§5.2).
 3. **NL / EU band legality:**
    - Which bands do you actually use?
    - Should 694–790 MHz and 1785–1805 MHz be annotated as allowed or forbidden for your use?
