@@ -125,8 +125,8 @@ def test_csv_lines() -> None:
     e = engine(threshold_dbm=-90.0)
     (alert,) = e.feed(FREQS, levels(f475=-62.34), 1.0)
     (row,) = e.take_rows(60.0, "2026-10-09T10:00:00+00:00")
-    assert CSV_HEADER == "timestamp_iso,range_start_mhz,range_stop_mhz,max_dbm,peak_mhz"
-    assert row_csv(row) == "2026-10-09T10:00:00+00:00,470.000000,480.000000,-62.3,475.000000"
+    assert CSV_HEADER == "timestamp_iso,range_start_mhz,range_stop_mhz,max_dbm,peak_mhz,kind"
+    assert row_csv(row) == "2026-10-09T10:00:00+00:00,470.000000,480.000000,-62.3,475.000000,DATA"
     assert alert_csv("2026-10-09T10:00:01+00:00", alert) == (
         "2026-10-09T10:00:01+00:00,470.000000,480.000000,-62.3,475.000000,ALERT"
     )
@@ -149,3 +149,26 @@ def test_writer_flushes_every_line(tmp_path: Path) -> None:
     assert (tmp_path / "l.csv").read_text("utf-8").splitlines()[-1] == "x,1"  # before close()
     w.close()
     w.close()
+
+
+def test_writer_never_mixes_layouts(tmp_path: Path) -> None:
+    old = tmp_path / "log.csv"
+    old.write_text("timestamp_iso,range_start_mhz,range_stop_mhz,max_dbm,peak_mhz\nx,1,2,3,4\n")
+    w = LogWriter(old)
+    assert w.redirected and w.path == tmp_path / "log-1.csv" and w.requested == old
+    w.write_line("a")
+    w.close()
+    assert old.read_text().count("\n") == 2  # untouched
+    assert lines_of(tmp_path / "log-1.csv") == [CSV_HEADER, "a"]
+    w2 = LogWriter(old)  # the numbered file has the right header now: reused
+    assert w2.path == tmp_path / "log-1.csv"
+    w2.close()
+    (tmp_path / "log-1.csv").write_text("other\n")
+    w3 = LogWriter(old)
+    assert w3.path == tmp_path / "log-2.csv"
+    w3.close()
+    assert not LogWriter(tmp_path / "fresh.csv").redirected
+
+
+def lines_of(path: Path) -> list[str]:
+    return path.read_text("utf-8").splitlines()

@@ -23,6 +23,7 @@ import math
 import queue
 import threading
 import time
+from collections import deque
 from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Final
@@ -151,6 +152,46 @@ class ReplayScheduler:
         self._remaining = 0.0
 
 
+class _ChunkFeed:
+    """Sweeps of a recording with chunk look-ahead.
+
+    ``prefetch()`` decodes the next chunk when fewer than ``low`` sweeps are buffered; the replay
+    worker calls it *outside* its lock, so decoding never blocks the UI thread's pause / speed
+    calls. Iterating decodes inline only if the buffer ran dry. A damaged chunk raises
+    ``RecordingError`` when its turn comes (the sweeps before it are delivered first).
+    """
+
+    def __init__(self, reader: RecordingReader, low: int = 64) -> None:
+        self._reader = reader
+        self._names = iter(reader.names)
+        self._buffer: deque[Sweep] = deque()
+        self._error: RecordingError | None = None
+        self._low = low
+
+    def prefetch(self) -> None:
+        if len(self._buffer) >= self._low or self._error is not None:
+            return
+        name = next(self._names, None)
+        if name is None:
+            return
+        try:
+            self._buffer.extend(self._reader.read_chunk(name))
+        except RecordingError as exc:
+            self._error = exc
+
+    def __iter__(self) -> _ChunkFeed:
+        return self
+
+    def __next__(self) -> Sweep:
+        if not self._buffer:
+            self.prefetch()
+        if self._buffer:
+            return self._buffer.popleft()
+        if self._error is not None:
+            raise self._error
+        raise StopIteration
+
+
 class ReplayLink:
     """``Link`` implementation that plays a recording."""
 
@@ -178,6 +219,7 @@ class ReplayLink:
         self._opened = False
         self._reader: RecordingReader | None = None
         self._scheduler: ReplayScheduler | None = None
+        self._feed: _ChunkFeed | None = None
         self._device: RecordingInfo | None = None
         self._model: ModelInfo | None = None
         self._config: DeviceConfig | None = None
@@ -209,7 +251,8 @@ class ReplayLink:
             reader = RecordingReader.open(self.path)
             if reader.total_sweeps == 0:
                 raise RecordingError(f"{self.path.name} contains no sweeps")
-            scheduler = ReplayScheduler(reader.sweeps(), reader.total_sweeps)
+            feed = _ChunkFeed(reader)
+            scheduler = ReplayScheduler(feed, reader.total_sweeps)
             first = scheduler.upcoming
             if first is None:
                 raise RecordingError(f"{self.path.name} contains no sweeps")
@@ -218,7 +261,7 @@ class ReplayLink:
             put_drop_oldest(self.events, LinkEvent("error", message))
             raise ConnectionError(message) from exc
         with self._lock:
-            self._reader, self._scheduler = reader, scheduler
+            self._reader, self._scheduler, self._feed = reader, scheduler, feed
             self._device = reader.meta.device
             self._ended = False
             self._model = self._model_info()
@@ -241,8 +284,8 @@ class ReplayLink:
         thread = self._thread
         if thread is not None:
             thread.join(timeout=2.0)
-            if thread.is_alive():
-                return
+            if thread.is_alive():  # it will exit on its own (stop is set); do not stay half open
+                log.warning("the replay thread did not stop within 2 s")
         self._thread = None
         self._opened = False
         put_drop_oldest(self.events, LinkEvent("disconnected", "Replay closed"))
@@ -263,9 +306,9 @@ class ReplayLink:
 
     @property
     def position(self) -> float:
-        """Fraction of the recording played, 0..1."""
-        with self._lock:
-            return self._scheduler.position if self._scheduler else 0.0
+        """Fraction of the recording played, 0..1 (no lock: read every frame by the UI)."""
+        scheduler = self._scheduler
+        return scheduler.position if scheduler else 0.0
 
     @property
     def total_sweeps(self) -> int:
@@ -300,8 +343,14 @@ class ReplayLink:
         with self._lock:
             if self._reader is None or self._scheduler is None:
                 return
-            self._scheduler.reset(self._reader.sweeps(), self._clock())
+            self._feed = _ChunkFeed(self._reader)
+            self._scheduler.reset(self._feed, self._clock())
             self._ended = False
+            while True:  # sweeps of the old position must not leak into the new run
+                try:
+                    self.sweeps.get_nowait()
+                except queue.Empty:
+                    break
         self._wake.set()
 
     # --- internals ----------------------------------------------------------------------------
@@ -347,6 +396,9 @@ class ReplayLink:
 
     def pump(self) -> float:
         """Emit what is due now; returns how long to wait before calling again (seconds)."""
+        feed = self._feed
+        if feed is not None:
+            feed.prefetch()  # decode the next chunk outside the lock
         with self._lock:
             scheduler = self._scheduler
             if scheduler is None or self._ended:
@@ -378,9 +430,9 @@ class ReplayLink:
 
     def _run(self) -> None:
         while not self._stop.is_set():
+            self._wake.clear()  # before pump(): a wake-up during it is not lost
             wait = self.pump()
             self._wake.wait(wait)
-            self._wake.clear()
 
 
 __all__ = [

@@ -753,7 +753,7 @@ class Controller:
         elif self.state.running and self.state.mode == "live":
             self._step_live(link, now)
         else:
-            _drain(link)
+            _discard(link)
         if self._replay_ended:
             self._finish_replay()
         self._update_rate(now)
@@ -818,7 +818,7 @@ class Controller:
                 active = getattr(link, "active_port", None)
                 self._connected_port = active[0] if active else st.port
             self._hold()
-            _drain(link)
+            _discard(link)
             if st.preset is not None and presets.find(st.preset, st.device_range_hz) is None:
                 st.preset = None  # this device cannot tune it; keep the range as a custom one
             self._update_estimate()
@@ -896,7 +896,7 @@ class Controller:
         except (RuntimeError, ValueError) as exc:
             self._live_awaiting = None
             st.error = str(exc)
-        _drain(link)
+        _discard(link)
 
     def _step_live(self, link: Link, now: float) -> None:
         st = self.state
@@ -1071,6 +1071,13 @@ def _drain(link: Link) -> list[Sweep]:
             out.append(link.sweeps.get_nowait())
         except queue.Empty:
             return out
+
+
+def _discard(link: Link) -> None:
+    """Drop queued sweeps nobody wants (idle device). A replay keeps them: they are recorded
+    data that must not be skipped when it is paused and resumed."""
+    if not isinstance(link, ReplayLink):
+        _drain(link)
 
 
 def _close_quietly(link: Link) -> None:

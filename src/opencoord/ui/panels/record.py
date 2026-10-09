@@ -32,6 +32,8 @@ TAG_REC_PATH = "record.path"
 TAG_REC_BUTTON = "record.button"
 TAG_REC_STATUS = "record.status"
 TAG_REPLAY_OPEN = "replay.open"
+TAG_REPLAY_UNFINISHED = "replay.unfinished"
+TAG_RECOVER = "record.recover"
 TAG_REPLAY_INFO = "replay.info"
 TAG_REPLAY_SPEED = "replay.speed"
 TAG_REPLAY_PLAY = "replay.play"
@@ -124,6 +126,14 @@ class RecordPanel:
     def _open_replay(self) -> None:
         self._ask("Open recording", [RECORDING_SUFFIX, ".*"], self._a.open_replay)
 
+    def _open_unfinished(self) -> None:
+        self._ask(
+            "Open unfinished recording (.ocrec.parts folder)",
+            [],
+            self._a.open_replay,
+            directory=True,
+        )
+
     def _choose_log_path(self) -> None:
         self._ask(
             "Log to",
@@ -162,6 +172,13 @@ class RecordPanel:
             dpg.add_button(label="Choose...", callback=self._choose_record_path)
         dpg.add_button(label="Record", tag=TAG_REC_BUTTON, width=-1, callback=self._toggle_record)
         dpg.add_text("", tag=TAG_REC_STATUS, wrap=340)
+        dpg.add_button(
+            label="Recover the unfinished recording",
+            tag=TAG_RECOVER,
+            width=-1,
+            show=False,
+            callback=lambda: a.recover(),
+        )
         dpg.add_text(
             "Records the sweeps of Live and finished scans to a compressed .ocrec file.",
             color=theme.MUTED_COLOR,
@@ -172,6 +189,12 @@ class RecordPanel:
         dpg.add_text("Replay")
         dpg.add_button(
             label="Open recording...", tag=TAG_REPLAY_OPEN, width=-1, callback=self._open_replay
+        )
+        dpg.add_button(
+            label="Open unfinished recording...",
+            tag=TAG_REPLAY_UNFINISHED,
+            width=-1,
+            callback=self._open_unfinished,
         )
         dpg.add_text("", tag=TAG_REPLAY_INFO, wrap=340)
         with dpg.group(horizontal=True):
@@ -258,7 +281,8 @@ class RecordPanel:
         dpg.add_text(
             "Writes one row per range every interval (max level and its frequency since the last "
             "row) while Live or a scan runs. With no ranges the current view range is used. "
-            "Alerts use the threshold line unless an own threshold is set.",
+            "Alerts use the threshold line unless an own threshold is set. During a replay the "
+            "logger works on the recorded time (rows and alerts carry the recording's timestamps).",
             color=theme.MUTED_COLOR,
             wrap=340,
         )
@@ -272,17 +296,21 @@ class RecordPanel:
             TAG_REC_STATUS,
             f"Recording to {rec.path.name}: {clock_text(rec.elapsed_s)}, {rec.sweeps} sweeps"
             if rec.active and rec.path
+            else "Finishing the recording file..."
+            if rec.finishing or a.finishing
             else "Not recording",
         )
         self._cfg(
             TAG_REC_BUTTON,
             label="Stop recording" if rec.active else "Record",
-            enabled=rec.active or state.connection == "connected",
+            enabled=rec.active or (state.connection == "connected" and not a.finishing),
         )
+        self._cfg(TAG_RECOVER, show=a.pending_recovery is not None, enabled=not a.finishing)
         self._cfg(TAG_REC_PATH, enabled=not rec.active)
 
         replay = a.replay_status()
-        self._cfg(TAG_REPLAY_OPEN, enabled=state.connection == "disconnected")
+        for tag in (TAG_REPLAY_OPEN, TAG_REPLAY_UNFINISHED):
+            self._cfg(tag, enabled=state.connection == "disconnected")
         if replay is None:
             self._set(TAG_REPLAY_INFO, "No recording open")
             self._cfg(TAG_REPLAY_PLAY, label="Play", enabled=False)

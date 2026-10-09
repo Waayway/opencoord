@@ -32,11 +32,19 @@ from opencoord.core.logger import Alert, LoggerEngine, LogRange, LogWriter
 from opencoord.core.types import Sweep
 from opencoord.device.replay import replay_port
 from opencoord.io import recording as rec
-from opencoord.io.recording import RecordingError, RecordingInfo, RecordingWriter
+from opencoord.io.recording import (
+    FinalizeJob,
+    PartsExistError,
+    RecordingError,
+    RecordingInfo,
+    RecordingWriter,
+)
 from opencoord.ui.controller import Controller
 
 log = logging.getLogger(__name__)
 
+#: Longest the app waits at exit for a recording to be saved.
+SHUTDOWN_WAIT_S: Final = 10.0
 #: Replay speeds offered in the UI, label -> factor (``inf`` = as fast as the UI consumes).
 SPEEDS: Final[dict[str, float]] = {"1x": 1.0, "4x": 4.0, "Max": math.inf}
 _MHZ = 1_000_000
@@ -60,6 +68,8 @@ class RecordingStatus:
     path: Path | None
     elapsed_s: float
     sweeps: int
+    #: Stopped, and the writer thread is still saving the file.
+    finishing: bool = False
 
 
 @dataclass(frozen=True)
@@ -99,6 +109,11 @@ class RecordingActions:
         # recorder
         self._writer: RecordingWriter | None = None
         self._rec_started = 0.0
+        #: A stopped recording whose file the writer thread is still finishing.
+        self._finishing: RecordingWriter | None = None
+        #: Unfinished recording (``.parts`` directory) that blocks a new recording; offer Recover.
+        self.pending_recovery: Path | None = None
+        self._recover_job: FinalizeJob | None = None
         # logger
         self.logger_ranges: list[LogRange] = []
         self.logger_interval_s: float = logger_mod.DEFAULT_INTERVAL_S
@@ -108,6 +123,9 @@ class RecordingActions:
         self._log_writer: LogWriter | None = None
         self._rows_written = 0
         self._alerts = 0
+        #: Timebase of the logger: ``"wall"`` (monotonic clock) or ``"replay"`` (sweep times).
+        self._log_base = "wall"
+        self._log_now: float | None = None
         controller.on_sweep.append(self._on_sweep)
         controller.on_tick.append(self._on_tick)
         controller.on_shutdown.append(self.shutdown)
@@ -125,10 +143,14 @@ class RecordingActions:
     def recording(self) -> bool:
         return self._writer is not None
 
+    @property
+    def finishing(self) -> bool:
+        return self._finishing is not None or self._recover_job is not None
+
     def recording_status(self) -> RecordingStatus:
         w = self._writer
         if w is None:
-            return RecordingStatus(False, None, 0.0, 0)
+            return RecordingStatus(False, None, 0.0, 0, self._finishing is not None)
         return RecordingStatus(True, w.path, self._clock() - self._rec_started, w.sweep_count)
 
     def _device_info(self) -> RecordingInfo | None:
@@ -158,15 +180,23 @@ class RecordingActions:
         if self._writer is not None:
             self.say("Already recording")
             return False
+        if self.finishing:
+            self.say("Finishing the previous recording, try again in a moment")
+            return False
         if st.connection != "connected":
             self.say("Connect a device (or open a recording) before recording")
             return False
         path = rec.with_suffix(path)
         try:
             self._writer = RecordingWriter(path, self._device_info(), clock=self._clock)
+        except PartsExistError as exc:
+            self.pending_recovery = exc.parts
+            self.say(f"{exc}. Press Recover to save it as a recording, then start again")
+            return False
         except (RecordingError, OSError) as exc:
             self.say(f"Cannot record to {path.name}: {getattr(exc, 'strerror', None) or exc}")
             return False
+        self.pending_recovery = None
         self._rec_started = self._clock()
         st.ui_version += 1
         suffix = "" if st.running else " (sweeps are recorded while Live or a scan runs)"
@@ -174,37 +204,68 @@ class RecordingActions:
         return True
 
     def stop_recording(self) -> bool:
-        """Finish the file; ``False`` if nothing was recording or it could not be written."""
+        """Stop recording; the file is finished on the writer thread (``finishing`` until done).
+
+        ``False`` if nothing was recording.
+        """
         writer, self._writer = self._writer, None
         if writer is None:
             return False
-        count = writer.sweep_count
-        try:
-            path = writer.close()
-        except (RecordingError, OSError) as exc:
-            self.say(
-                f"Could not finish {writer.path.name}: {getattr(exc, 'strerror', None) or exc}. "
-                f"The flushed data is in {rec.parts_dir_for(writer.path).name} and can be opened"
-            )
-            return False
-        self.say(f"Saved recording {path} ({count} sweeps)")
+        writer.close()
+        self._finishing = writer
+        self.say(f"Finishing recording {writer.path.name}...")
         return True
 
-    def _fail_recording(self, exc: Exception) -> None:
-        writer, self._writer = self._writer, None
-        if writer is None:
-            return
+    def recover(self) -> bool:
+        """Save the unfinished recording that blocked a new one (background thread)."""
+        parts = self.pending_recovery
+        if parts is None or self._recover_job is not None:
+            return False
+        self._recover_job = FinalizeJob(parts)
+        self.say(f"Recovering {parts.name}...")
+        return True
+
+    def _fail_recording(self, writer: RecordingWriter, exc: Exception) -> None:
+        if self._writer is writer:
+            self._writer = None
+        if self._finishing is writer:
+            self._finishing = None
         reason = getattr(exc, "strerror", None) or exc
+        parts = rec.parts_dir_for(writer.path).name
         self.say(
-            f"Recording stopped: {reason}. Flushed data is in "
-            f"{rec.parts_dir_for(writer.path).name} and can be opened for replay"
+            f"Recording stopped: {reason}. The data written so far is in {parts}: use "
+            f"'Open unfinished recording...' to replay it, or start a recording with the same "
+            "name and press Recover"
         )
         log.warning("recording stopped", exc_info=exc)
+
+    def _check_writers(self) -> None:
+        writer = self._writer
+        if writer is not None:
+            writer.poll()
+            if writer.error is not None:
+                self._fail_recording(writer, writer.error)
+        finishing = self._finishing
+        if finishing is not None and finishing.done:
+            self._finishing = None
+            if finishing.error is not None:
+                self._fail_recording(finishing, finishing.error)
+            else:
+                self.say(f"Saved recording {finishing.path} ({finishing.sweep_count} sweeps)")
+        job = self._recover_job
+        if job is not None and job.done:
+            self._recover_job = None
+            if job.error is not None:
+                self.say(f"Cannot recover {job.parts.name}: {job.error}")
+            else:
+                self.pending_recovery = None
+                self.say(f"Recovered {job.sweeps} sweeps into {job.path}; you can record again now")
 
     # --- replay -------------------------------------------------------------------------------
 
     def open_replay(self, path: Path) -> bool:
-        """Connect to a recording like to a port; refused while a connection exists."""
+        """Connect to a recording (a ``.ocrec`` file or an unfinished ``.ocrec.parts`` folder)
+        like to a port; refused while a connection exists."""
         if self.controller.state.connection != "disconnected":
             self.say("Disconnect before opening a recording")
             return False
@@ -260,7 +321,8 @@ class RecordingActions:
         e = self._engine
         if e is None or self._log_writer is None:
             return LoggerStatus(False, None, None, 0, 0)
-        remaining = max(0.0, e.interval_s - (self._clock() - e.last_write))
+        now = self._logger_now()
+        remaining = e.interval_s if now is None else max(0.0, e.interval_s - (now - e.last_write))
         return LoggerStatus(
             True, self._log_writer.path, remaining, self._rows_written, self._alerts
         )
@@ -331,15 +393,20 @@ class RecordingActions:
         except (ValueError, OSError) as exc:
             self.say(f"Cannot start the logger: {getattr(exc, 'strerror', None) or exc}")
             return False
-        engine.start(self._clock())
+        self._log_base = "replay" if self.controller.replay_link is not None else "wall"
+        self._log_now = None
+        if self._log_base == "wall":
+            engine.start(self._clock())
         self._engine = engine
         self._rows_written = self._alerts = 0
         st = self.controller.state
         st.logger_alert = None
         st.ui_version += 1
+        target = self._log_writer.path
+        note = f" ({path.name} has another layout; a new file is used)" if target != path else ""
         self.say(
-            f"Logging {len(self.logger_ranges)} range(s) every {engine.interval_s:g} s to {path}"
-            " (while Live or scanning)"
+            f"Logging {len(self.logger_ranges)} range(s) every {engine.interval_s:g} s to "
+            f"{target}{note} (while Live or scanning)"
         )
         return True
 
@@ -349,7 +416,7 @@ class RecordingActions:
         if engine is None or writer is None:
             return
         try:
-            for row in engine.take_rows(self._clock(), self._timestamp()):
+            for row in engine.take_rows(self._logger_now() or 0.0, self._logger_iso()):
                 writer.write_line(logger_mod.row_csv(row))
         except OSError:
             log.warning("could not write the last logger rows", exc_info=True)
@@ -357,6 +424,15 @@ class RecordingActions:
         self._engine = self._log_writer = None
         self.controller.state.ui_version += 1
         self.say("Logger stopped")
+
+    def _logger_now(self) -> float | None:
+        """Logger time: the monotonic clock, or the recorded time of the last sweep in a replay."""
+        return self._log_now if self._log_base == "replay" else self._clock()
+
+    def _logger_iso(self) -> str:
+        if self._log_base == "replay" and self._log_now is not None:
+            return datetime.fromtimestamp(self._log_now, UTC).isoformat(timespec="seconds")
+        return self._timestamp()
 
     def clear_alert(self) -> None:
         self.controller.state.logger_alert = None
@@ -373,7 +449,7 @@ class RecordingActions:
         self.controller.state.logger_alert = text
         self.say(text)
         if self._log_writer is not None:
-            self._log_writer.write_line(logger_mod.alert_csv(self._timestamp(), alert))
+            self._log_writer.write_line(logger_mod.alert_csv(self._logger_iso(), alert))
 
     def _fail_logger(self, exc: Exception) -> None:
         log.warning("logger stopped", exc_info=exc)
@@ -389,38 +465,48 @@ class RecordingActions:
         if writer is not None:
             try:
                 writer.append(raw)
-            except (RecordingError, OSError) as exc:
-                self._fail_recording(exc)
+            except RecordingError as exc:
+                self._fail_recording(writer, exc)
         engine = self._engine
         if engine is not None:
+            base = "replay" if self.controller.replay_link is not None else "wall"
+            now = shown.timestamp if base == "replay" else self._clock()
+            if base != self._log_base or (base == "replay" and self._log_now is None):
+                engine.start(now)  # first sweep of this timebase starts the interval
+                self._log_base = base
+            self._log_now = now if base == "replay" else self._log_now
             engine.set_threshold(self.effective_threshold())
             try:
-                for alert in engine.feed(shown.freqs_hz, shown.dbm, self._clock()):
+                for alert in engine.feed(shown.freqs_hz, shown.dbm, now):
                     self._alert(alert)
             except OSError as exc:
                 self._fail_logger(exc)
 
     def _on_tick(self, _now: float) -> None:
-        writer = self._writer
-        if writer is not None:
-            try:
-                writer.poll()
-            except (RecordingError, OSError) as exc:
-                self._fail_recording(exc)
+        self._check_writers()
         engine, log_writer = self._engine, self._log_writer
         if engine is not None and log_writer is not None:
-            now = self._clock()
-            if engine.due(now):
+            now = self._logger_now()
+            if now is not None and engine.due(now):
                 try:
-                    for row in engine.take_rows(now, self._timestamp()):
+                    for row in engine.take_rows(now, self._logger_iso()):
                         log_writer.write_line(logger_mod.row_csv(row))
                         self._rows_written += 1
                 except OSError as exc:
                     self._fail_logger(exc)
 
     def shutdown(self) -> None:
-        """Finish the recording and the log (app exit)."""
+        """Finish the recording (waiting up to ``SHUTDOWN_WAIT_S``) and the log (app exit)."""
         self.stop_recording()
+        writer = self._finishing
+        if writer is not None and not writer.wait(SHUTDOWN_WAIT_S):
+            log.warning(
+                "recording %s was not saved within %.0f s; its data stays in %s",
+                writer.path.name,
+                SHUTDOWN_WAIT_S,
+                rec.parts_dir_for(writer.path).name,
+            )
+        self._check_writers()
         self.disable_logger()
 
 

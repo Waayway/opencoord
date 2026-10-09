@@ -155,6 +155,7 @@ class FileUI:
         action: Callable[[Path], object],
         *,
         default_name: str = "",
+        directory: bool = False,
     ) -> None:
         self._dialogs += 1
         tag = f"files.dialog.{self._dialogs}"
@@ -162,8 +163,8 @@ class FileUI:
         def done(sender: object, app_data: dict[str, Any]) -> None:
             dpg.delete_item(tag)
             selected = app_data.get("file_path_name") or ""
-            if selected and not selected.endswith(("/", "\\")):
-                action(Path(selected))
+            if selected and (directory or not selected.endswith(("/", "\\"))):
+                action(Path(selected.rstrip("/\\")) if directory else Path(selected))
 
         with dpg.file_dialog(
             label=title,
@@ -172,6 +173,7 @@ class FileUI:
             width=_DIALOG_SIZE[0],
             height=_DIALOG_SIZE[1],
             default_filename=default_name,
+            directory_selector=directory,
             callback=done,
             cancel_callback=lambda *_: dpg.delete_item(tag),
         ):

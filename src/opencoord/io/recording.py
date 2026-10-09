@@ -23,11 +23,14 @@ from __future__ import annotations
 import io
 import json
 import os
+import queue
 import shutil
 import tempfile
+import threading
 import time
 import zipfile
 import zlib
+from collections import deque
 from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -281,11 +284,31 @@ def with_suffix(path: Path) -> Path:
     return path if path.suffix else path.with_name(path.name + RECORDING_SUFFIX)
 
 
-class RecordingWriter:
-    """Appends sweeps; flushes a chunk every 256 sweeps or 5 seconds.
+class PartsExistError(RecordingError):
+    """A non-empty ``<name>.ocrec.parts`` directory (an unfinished recording) is in the way."""
 
-    Call :meth:`poll` regularly (e.g. every frame) so the time-based flush also happens while no
-    sweeps arrive. Errors writing to disk raise ``OSError``; the recording stays recoverable.
+    def __init__(self, parts: Path) -> None:
+        super().__init__(
+            f"{parts.name} is an unfinished recording (the app stopped before it was saved)"
+        )
+        self.parts = parts
+
+
+_FINALIZE: Final = object()
+#: Chunks handed to the writer thread at once; beyond that the UI side keeps buffering.
+MAX_QUEUED_CHUNKS: Final = 8
+
+
+class RecordingWriter:
+    """Appends sweeps; a writer thread encodes and writes a chunk per 256 sweeps or 5 seconds.
+
+    Nothing here blocks the caller: :meth:`append` / :meth:`poll` only buffer and hand finished
+    chunks to a bounded queue (when it is full the chunks stay buffered here and are retried on the
+    next call). Call :meth:`poll` regularly (every frame) so the time-based cut also happens while
+    no sweeps arrive. :meth:`close` is non-blocking too: when the writer thread has written every
+    chunk and zipped the file, :attr:`done` becomes true; check :attr:`error` for a disk failure
+    (the flushed chunks stay in the parts directory and are recoverable). The 5 s clock starts when
+    a sweep enters an empty buffer.
     """
 
     def __init__(
@@ -299,67 +322,162 @@ class RecordingWriter:
         self._clock = clock
         self._parts = parts_dir_for(path)
         if self._parts.exists() and any(self._parts.iterdir()):
-            raise RecordingError(
-                f"{self._parts.name} holds an unfinished recording; open it to replay or "
-                "delete it, then start again"
-            )
+            raise PartsExistError(self._parts)
         self._parts.mkdir(parents=True, exist_ok=True)
         self._meta = RecordingMeta(
             created=datetime.now(UTC).isoformat(timespec="seconds"),
             opencoord_version=__version__,
             device=info,
         )
-        self._buffer: list[Sweep] = []
-        self._last_flush = clock()
-        self._closed = False
         self._write_meta()
+        self._buffer: list[Sweep] = []
+        self._buffer_since = 0.0
+        self._pending: deque[list[Sweep]] = deque()
+        self._queue: queue.Queue[object] = queue.Queue(maxsize=MAX_QUEUED_CHUNKS)
+        self._appended = 0
+        self._closing = False
+        self._sentinel_sent = False
+        self._done = threading.Event()
+        self._error: Exception | None = None
+        self._thread = threading.Thread(target=self._run, name="recording-writer", daemon=True)
+        self._thread.start()
 
     @property
     def sweep_count(self) -> int:
-        """Sweeps appended so far (flushed or not)."""
-        return self._meta.sweep_count + len(self._buffer)
+        """Sweeps appended so far (written or not)."""
+        return self._appended
 
     @property
     def closed(self) -> bool:
-        return self._closed
+        """:meth:`close` was called (the file may still be being finished)."""
+        return self._closing
+
+    @property
+    def done(self) -> bool:
+        """The writer thread has finished (the file is saved, or :attr:`error` is set)."""
+        return self._done.is_set()
+
+    @property
+    def error(self) -> Exception | None:
+        return self._error
 
     def append(self, sweep: Sweep) -> None:
-        if self._closed:
+        if self._closing:
             raise RecordingError("The recording is already closed")
+        if not self._buffer:
+            self._buffer_since = self._clock()
         self._buffer.append(sweep)
+        self._appended += 1
         self.poll()
 
     def poll(self) -> None:
-        """Flush a chunk if one is full or the oldest buffered sweep is 5 s old."""
-        if not self._buffer or self._closed:
-            return
-        if (
+        """Cut a chunk if one is full or its first sweep is 5 s old; hand chunks to the thread."""
+        if self._buffer and (
             len(self._buffer) >= CHUNK_SWEEPS
-            or self._clock() - self._last_flush >= FLUSH_INTERVAL_S
+            or self._clock() - self._buffer_since >= FLUSH_INTERVAL_S
         ):
-            self.flush()
+            self._cut()
+        self._pump()
 
     def flush(self) -> None:
-        self._last_flush = self._clock()
-        if not self._buffer:
-            return
-        name = chunk_name(len(self._meta.chunks))
-        write_atomic(self._parts / name, encode_chunk(self._buffer))
-        self._meta.chunks.append(ChunkInfo(name, len(self._buffer)))
-        self._meta.sweep_count += len(self._buffer)
-        self._buffer = []
-        self._write_meta()
+        """Hand everything buffered to the writer thread now."""
+        self._cut()
+        self._pump()
+
+    def _cut(self) -> None:
+        if self._buffer:
+            self._pending.append(self._buffer)
+            self._buffer = []
+
+    def _pump(self) -> None:
+        while self._pending:
+            try:
+                self._queue.put_nowait(self._pending[0])
+            except queue.Full:
+                return
+            self._pending.popleft()
+        if self._closing and not self._sentinel_sent:
+            try:
+                self._queue.put_nowait(_FINALIZE)
+            except queue.Full:
+                return
+            self._sentinel_sent = True
+
+    def close(self) -> None:
+        """Start finishing the file (non-blocking); poll :attr:`done`, then check :attr:`error`."""
+        if not self._closing:
+            self._closing = True
+            self._cut()
+            self._pump()
+
+    def wait(self, timeout_s: float) -> bool:
+        """Block until :attr:`done` (up to ``timeout_s``); only for shutdown and tests."""
+        deadline = time.monotonic() + timeout_s
+        while not self._done.is_set() and time.monotonic() < deadline:
+            self.poll()
+            self._done.wait(0.01)
+        return self._done.is_set()
+
+    def wait_idle(self, timeout_s: float = 5.0) -> bool:
+        """Block until every handed-over chunk is on disk (tests)."""
+        deadline = time.monotonic() + timeout_s
+        while time.monotonic() < deadline:
+            self._pump()
+            if not self._pending and self._queue.unfinished_tasks == 0:
+                return True
+            time.sleep(0.005)
+        return False
+
+    # --- writer thread ------------------------------------------------------------------------
 
     def _write_meta(self) -> None:
         write_atomic(self._parts / META_NAME, meta_to_json(self._meta).encode("utf-8"))
 
-    def close(self) -> Path:
-        """Flush, zip the parts into ``path`` atomically and delete them; returns ``path``."""
-        if not self._closed:
-            self.flush()
-            _zip_parts(self._parts, self.path)
-            self._closed = True
-        return self.path
+    def _run(self) -> None:
+        while True:
+            item = self._queue.get()
+            try:
+                if item is _FINALIZE:
+                    _zip_parts(self._parts, self.path)
+                    return
+                assert isinstance(item, list)
+                name = chunk_name(len(self._meta.chunks))
+                write_atomic(self._parts / name, encode_chunk(item))
+                self._meta.chunks.append(ChunkInfo(name, len(item)))
+                self._meta.sweep_count += len(item)
+                self._write_meta()
+            except Exception as exc:
+                self._error = exc
+                return
+            finally:
+                self._queue.task_done()
+                if item is _FINALIZE or self._error is not None:
+                    self._done.set()
+
+
+class FinalizeJob:
+    """Runs :func:`finalize_parts` on a background thread (recovering a crashed recording)."""
+
+    def __init__(self, parts: Path) -> None:
+        self.parts = parts
+        self.path: Path | None = None
+        self.error: Exception | None = None
+        self.sweeps = 0
+        self._done = threading.Event()
+        threading.Thread(target=self._run, name="recording-recover", daemon=True).start()
+
+    @property
+    def done(self) -> bool:
+        return self._done.is_set()
+
+    def _run(self) -> None:
+        try:
+            self.sweeps = RecordingReader.open(self.parts).total_sweeps
+            self.path = finalize_parts(self.parts)
+        except Exception as exc:
+            self.error = exc
+        finally:
+            self._done.set()
 
 
 def _zip_parts(parts: Path, target: Path) -> None:
@@ -382,13 +500,28 @@ def _zip_parts(parts: Path, target: Path) -> None:
     shutil.rmtree(parts, ignore_errors=True)
 
 
-def finalize_parts(parts: Path) -> Path:
-    """Zip an unfinalised ``<name>.ocrec.parts`` directory into ``<name>.ocrec``."""
-    reader = RecordingReader.open(parts)  # validates meta.json and the chunk files
+def recovered_target(parts: Path) -> Path:
+    """Where :func:`finalize_parts` writes: ``<name>.ocrec``, or ``<name>-recovered[-N].ocrec`` if
+    that file exists (never replace an older, possibly good recording)."""
     target = parts.with_name(parts.name.removesuffix(PARTS_SUFFIX))
+    if not target.exists():
+        return target
+    stem = target.name.removesuffix(RECORDING_SUFFIX)
+    candidate = target.with_name(f"{stem}-recovered{RECORDING_SUFFIX}")
+    n = 1
+    while candidate.exists():
+        n += 1
+        candidate = target.with_name(f"{stem}-recovered-{n}{RECORDING_SUFFIX}")
+    return candidate
+
+
+def finalize_parts(parts: Path) -> Path:
+    """Zip an unfinalised ``<name>.ocrec.parts`` directory into ``<name>.ocrec`` (see
+    :func:`recovered_target`); returns the file written."""
+    reader = RecordingReader.open(parts)  # validates meta.json and the chunk files
+    target = recovered_target(parts)
     if reader.orphans:  # chunks missing from meta.json: list them before zipping
-        meta = reader.meta
-        write_atomic(parts / META_NAME, meta_to_json(meta).encode("utf-8"))
+        write_atomic(parts / META_NAME, meta_to_json(reader.meta).encode("utf-8"))
     _zip_parts(parts, target)
     return target
 
@@ -495,6 +628,8 @@ __all__ = [
     "FLUSH_INTERVAL_S",
     "RECORDING_SUFFIX",
     "ChunkInfo",
+    "FinalizeJob",
+    "PartsExistError",
     "RecordingError",
     "RecordingInfo",
     "RecordingMeta",

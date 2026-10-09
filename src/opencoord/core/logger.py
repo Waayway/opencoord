@@ -6,8 +6,10 @@ the previous write), and :meth:`LoggerEngine.feed` returns an :class:`Alert` whe
 exceeds the threshold. An alert is not repeated for the same range within one interval. A range with
 no data since the last write gets no row. :class:`LogWriter` appends lines to the CSV file.
 
-CSV: ``timestamp_iso,range_start_mhz,range_stop_mhz,max_dbm,peak_mhz`` per range and interval; an
-alert is appended as the same five fields followed by ``,ALERT``.
+CSV: ``timestamp_iso,range_start_mhz,range_stop_mhz,max_dbm,peak_mhz,kind``;
+``kind`` is ``DATA`` for the row per range and interval and ``ALERT`` for an alert line.
+:class:`LogWriter` never appends to a file whose header differs (another layout): it starts
+``name-1.csv``, ``name-2.csv``.
 """
 
 from __future__ import annotations
@@ -19,7 +21,7 @@ from typing import Final, TextIO
 import numpy as np
 import numpy.typing as npt
 
-CSV_HEADER: Final = "timestamp_iso,range_start_mhz,range_stop_mhz,max_dbm,peak_mhz"
+CSV_HEADER: Final = "timestamp_iso,range_start_mhz,range_stop_mhz,max_dbm,peak_mhz,kind"
 MIN_INTERVAL_S: Final = 1.0
 DEFAULT_INTERVAL_S: Final = 60.0
 MAX_RANGES: Final = 8
@@ -132,7 +134,7 @@ def _fields(timestamp_iso: str, start_hz: int, stop_hz: int, level: float, peak_
 
 
 def row_csv(row: LogRow) -> str:
-    return _fields(row.timestamp_iso, row.start_hz, row.stop_hz, row.max_dbm, row.peak_hz)
+    return _fields(row.timestamp_iso, row.start_hz, row.stop_hz, row.max_dbm, row.peak_hz) + ",DATA"
 
 
 def alert_csv(timestamp_iso: str, alert: Alert) -> str:
@@ -141,14 +143,42 @@ def alert_csv(timestamp_iso: str, alert: Alert) -> str:
     )
 
 
+def _first_line(path: Path) -> str:
+    with open(path, encoding="utf-8", errors="replace") as f:
+        return f.readline().rstrip("\r\n")
+
+
+def usable_log_path(path: Path) -> Path:
+    """``path``, or ``stem-N.suffix`` when ``path`` exists with another header (or unreadable)."""
+    n = 0
+    candidate = path
+    while candidate.exists() and candidate.stat().st_size > 0:
+        try:
+            if _first_line(candidate) == CSV_HEADER:
+                return candidate
+        except OSError:
+            pass
+        n += 1
+        candidate = path.with_name(f"{path.stem}-{n}{path.suffix}")
+    return candidate
+
+
 class LogWriter:
-    """Appends CSV lines (flushed per line, so a crash loses nothing); writes the header once."""
+    """Appends CSV lines (flushed per line, so a crash loses nothing); writes the header once.
+
+    ``path`` is where lines go: the requested file, or a numbered sibling when the requested one
+    holds a different layout (``redirected`` is then true).
+    """
 
     def __init__(self, path: Path) -> None:
-        self.path = path
-        path.parent.mkdir(parents=True, exist_ok=True)
-        new = not path.exists() or path.stat().st_size == 0
-        self._file: TextIO | None = open(path, "a", encoding="utf-8", newline="\n")  # noqa: SIM115
+        self.requested = path
+        self.path = usable_log_path(path)
+        self.redirected = self.path != path
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        new = not self.path.exists() or self.path.stat().st_size == 0
+        self._file: TextIO | None = open(  # noqa: SIM115
+            self.path, "a", encoding="utf-8", newline="\n"
+        )
         if new:
             self.write_line(CSV_HEADER)
 
@@ -176,4 +206,5 @@ __all__ = [
     "LoggerEngine",
     "alert_csv",
     "row_csv",
+    "usable_log_path",
 ]

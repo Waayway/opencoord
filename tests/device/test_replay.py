@@ -147,7 +147,9 @@ def make_recording(tmp_path: Path, sweeps: list[Sweep], info: RecordingInfo | No
     w = RecordingWriter(tmp_path / "r.ocrec", info)
     for s in sweeps:
         w.append(s)
-    return w.close()
+    w.close()
+    assert w.wait(10) and w.error is None
+    return w.path
 
 
 def drain(q: queue.Queue[Sweep]) -> list[Sweep]:
@@ -326,6 +328,7 @@ def test_damaged_chunk_midway_reports_an_error_and_ends(tmp_path: Path) -> None:
         w.append(s)
     parts_chunk = tmp_path / "d.ocrec.parts"
     w.flush()
+    assert w.wait_idle()
     (parts_chunk / "chunk_000001.npz").write_bytes(b"damaged")  # second chunk
     link = ReplayLink(parts_chunk, clock=FakeClock(), threaded=False)
     link.open()
@@ -356,3 +359,45 @@ def test_threaded_replay_at_max_speed_delivers_everything(tmp_path: Path) -> Non
     assert events(link)[-1].message == "End of recording"
     link.close()
     assert not link.is_open
+
+
+def test_rewind_drops_queued_sweeps_of_the_old_run(tmp_path: Path) -> None:
+    link = ReplayLink(
+        make_recording(tmp_path, [sweep(float(i)) for i in range(6)]),
+        clock=FakeClock(),
+        threaded=False,
+    )
+    link.open()
+    link.set_speed(math.inf)
+    link.set_paused(False)
+    link.pump()
+    assert link.sweeps.qsize() == 6  # not consumed
+    link.rewind()
+    assert link.sweeps.qsize() == 0
+    link.set_paused(False)
+    link.pump()
+    assert timestamps(drain(link.sweeps)) == [float(i) for i in range(6)]
+
+
+def test_chunk_decoding_happens_outside_the_lock(tmp_path: Path) -> None:
+    link = ReplayLink(
+        make_recording(tmp_path, [sweep(float(i)) for i in range(600)]),
+        clock=FakeClock(),
+        threaded=False,
+        queue_size=1000,
+    )
+    link.open()
+    link.set_speed(math.inf)
+    link.set_paused(False)
+    seen: list[bool] = []
+    real = link._feed.prefetch  # type: ignore[union-attr]
+
+    def spy() -> None:
+        # RLock: _is_owned() is true only while *this* thread holds it.
+        seen.append(link._lock._is_owned())  # type: ignore[attr-defined]
+        real()
+
+    link._feed.prefetch = spy  # type: ignore[union-attr,method-assign]
+    link.pump()
+    assert seen and not any(seen)
+    assert len(drain(link.sweeps)) == 64

@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import io
 import json
+import shutil
+import threading
+import time
 import zipfile
 from pathlib import Path
 
@@ -122,7 +125,9 @@ def write(path: Path, sweeps: list[Sweep]) -> Path:
     w = RecordingWriter(path, INFO, clock=FakeClock())
     for s in sweeps:
         w.append(s)
-    return w.close()
+    w.close()
+    assert w.wait(10) and w.error is None
+    return w.path
 
 
 def test_writer_round_trip_across_chunks(tmp_path: Path) -> None:
@@ -157,18 +162,20 @@ def test_writer_flushes_every_five_seconds(tmp_path: Path) -> None:
     w = RecordingWriter(tmp_path / "t.ocrec", INFO, clock=clock)
     parts = tmp_path / "t.ocrec.parts"
     w.append(sweep(1.0))
-    assert not list(parts.glob("chunk_*"))
+    assert w.wait_idle() and not list(parts.glob("chunk_*"))
     clock.now += 4.9
     w.poll()
-    assert not list(parts.glob("chunk_*"))
+    assert w.wait_idle() and not list(parts.glob("chunk_*"))
     clock.now += 0.2
     w.poll()
+    assert w.wait_idle()
     assert [p.name for p in parts.glob("chunk_*")] == ["chunk_000000.npz"]
     w.append(sweep(2.0))
     clock.now += 5.1
     w.append(sweep(3.0))  # append also checks the time
-    assert len(list(parts.glob("chunk_*"))) == 2
+    assert w.wait_idle() and len(list(parts.glob("chunk_*"))) == 2
     w.close()
+    assert w.wait(5)
     assert len(list(RecordingReader.open(tmp_path / "t.ocrec").sweeps())) == 3
 
 
@@ -177,6 +184,7 @@ def test_flushed_chunks_survive_a_crash(tmp_path: Path) -> None:
     for i in range(300):  # one full chunk flushed, 44 sweeps still buffered
         w.append(sweep(i * 0.1))
     parts = tmp_path / "c.ocrec.parts"
+    assert w.wait_idle()
     assert (parts / "chunk_000000.npz").exists() and (parts / "meta.json").exists()
     assert not (tmp_path / "c.ocrec").exists()
     # "Crash": the writer is abandoned. The parts directory opens like a recording.
@@ -195,6 +203,7 @@ def test_orphan_chunk_without_meta_update_is_recovered(tmp_path: Path) -> None:
     for i in range(256):
         w.append(sweep(i * 0.1))
     parts = tmp_path / "o.ocrec.parts"
+    assert w.wait_idle()
     # Crash between writing chunk 1 and updating meta.json.
     (parts / "chunk_000001.npz").write_bytes(recording.encode_chunk([sweep(100.0), sweep(100.1)]))
     r = RecordingReader.open(parts)
@@ -216,7 +225,8 @@ def test_stale_parts_directory_is_not_overwritten(tmp_path: Path) -> None:
     w.append(sweep(1.0))
     clock.now += 6
     w.poll()  # flushes the first chunk
-    with pytest.raises(RecordingError, match="unfinished recording"):
+    assert w.wait_idle()
+    with pytest.raises(recording.PartsExistError, match="unfinished recording"):
         RecordingWriter(tmp_path / "s.ocrec", INFO, clock=FakeClock())
 
 
@@ -259,10 +269,74 @@ def test_close_is_atomic_and_idempotent(tmp_path: Path) -> None:
     target.write_bytes(b"old")
     w = RecordingWriter(target, INFO, clock=FakeClock())
     w.append(sweep(1.0))
-    assert target.read_bytes() == b"old"  # untouched until close
-    assert w.close() == target
-    assert w.close() == target
+    assert target.read_bytes() == b"old"  # untouched until closed
+    w.close()
+    w.close()
+    assert w.wait(5) and w.error is None and w.done
     assert len(list(RecordingReader.open(target).sweeps())) == 1
     assert not [p for p in tmp_path.iterdir() if p.name.endswith(".tmp")]
     with pytest.raises(RecordingError):
         w.append(sweep(2.0))
+
+
+def test_the_caller_never_blocks_and_a_full_queue_keeps_buffering(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    gate = threading.Event()
+    real = recording.write_atomic
+
+    def slow(path: Path, data: bytes) -> None:
+        if path.name.startswith("chunk"):
+            gate.wait(10)
+        real(path, data)
+
+    monkeypatch.setattr(recording, "write_atomic", slow)
+    w = RecordingWriter(tmp_path / "q.ocrec", INFO, clock=FakeClock())
+    t0 = time.monotonic()
+    total = recording.CHUNK_SWEEPS * (recording.MAX_QUEUED_CHUNKS + 4)
+    for i in range(total):  # the writer thread is stuck: 12 chunks cannot all be queued
+        w.append(sweep(float(i)))
+    w.close()  # does not block either
+    assert time.monotonic() - t0 < 2.0
+    assert not w.done and w.sweep_count == total
+    gate.set()
+    assert w.wait(20) and w.error is None
+    assert len(list(RecordingReader.open(tmp_path / "q.ocrec").sweeps())) == total
+
+
+def test_disk_failure_in_the_writer_thread_is_reported(tmp_path: Path) -> None:
+    w = RecordingWriter(tmp_path / "f.ocrec", INFO, clock=FakeClock())
+    shutil.rmtree(tmp_path / "f.ocrec.parts")
+    (tmp_path / "f.ocrec.parts").write_text("in the way")
+    w.append(sweep(1.0))
+    w.close()
+    assert w.wait(5)
+    assert isinstance(w.error, OSError)
+
+
+def test_time_flush_clock_starts_with_the_first_sweep(tmp_path: Path) -> None:
+    clock = FakeClock()
+    w = RecordingWriter(tmp_path / "t2.ocrec", INFO, clock=clock)
+    clock.now += 100  # idle before the first sweep must not count
+    w.append(sweep(1.0))
+    assert w.wait_idle() and not list((tmp_path / "t2.ocrec.parts").glob("chunk_*"))
+    w.close()
+    assert w.wait(5)
+
+
+def test_recover_does_not_replace_an_existing_recording(tmp_path: Path) -> None:
+    good = write(tmp_path / "r.ocrec", [sweep(1.0)])
+    w = RecordingWriter(tmp_path / "r.ocrec", INFO, clock=FakeClock())
+    for i in range(256):
+        w.append(sweep(float(i)))
+    assert w.wait_idle()
+    parts = tmp_path / "r.ocrec.parts"
+    job = recording.FinalizeJob(parts)
+    deadline = time.monotonic() + 5
+    while not job.done:
+        assert time.monotonic() < deadline
+        time.sleep(0.005)
+    assert job.error is None and job.sweeps == 256
+    assert job.path == tmp_path / "r-recovered.ocrec" and not parts.exists()
+    assert len(list(RecordingReader.open(good).sweeps())) == 1  # untouched
+    assert len(list(RecordingReader.open(job.path).sweeps())) == 256

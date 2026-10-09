@@ -64,13 +64,19 @@ def connected(c: Controller) -> Controller:
     return c
 
 
+def finish(c: Controller, actions: RecordingActions) -> None:
+    run_until(c, lambda: not actions.finishing)
+
+
 def write_recording(path: Path, count: int, *, points: int = 16, step_s: float = 0.001) -> Path:
     w = RecordingWriter(path, INFO)
     for i in range(count):
         freqs = 600 * MHZ + np.arange(points, dtype=np.float64) * 25_000
         dbm = np.full(points, -90.0 + i, dtype=np.float32)
         w.append(Sweep(freqs, dbm, 1000.0 + i * step_s))
-    return w.close()
+    w.close()
+    assert w.wait(10) and w.error is None
+    return w.path
 
 
 # --- recording ------------------------------------------------------------------------------------
@@ -97,7 +103,10 @@ def test_record_live_sweeps_including_a_range_change(
     seen = actions.recording_status().sweeps
     run_until(ctl, lambda: actions.recording_status().sweeps >= seen + 5)
     assert actions.stop_recording()
-    assert not actions.recording and "Saved recording" in ctl.state.message
+    assert not actions.recording and actions.finishing
+    assert "Finishing" in ctl.state.message
+    finish(ctl, actions)
+    assert "Saved recording" in ctl.state.message
 
     reader = RecordingReader.open(tmp_path / "live.ocrec")
     sweeps = list(reader.sweeps())
@@ -245,6 +254,7 @@ def test_replay_can_be_recorded_again_unchanged(
     ctl.start()
     run_until(ctl, lambda: not ctl.state.running)
     assert actions.stop_recording()
+    finish(ctl, actions)
     a = list(RecordingReader.open(source).sweeps())
     b = list(RecordingReader.open(tmp_path / "copy.ocrec").sweeps())
     assert len(a) == len(b) == 20
@@ -297,7 +307,7 @@ def test_logger_rows_alert_and_debounce(
         time.sleep(0.003)
     assert actions.logger_status().alerts == 1
     body = lines(log_path)
-    assert body[0] == "timestamp_iso,range_start_mhz,range_stop_mhz,max_dbm,peak_mhz"
+    assert body[0] == "timestamp_iso,range_start_mhz,range_stop_mhz,max_dbm,peak_mhz,kind"
     alert_lines = [x for x in body if x.endswith(",ALERT")]
     assert len(alert_lines) == 1 and alert_lines[0].startswith(
         "2026-10-09T10:00:00+00:00,561.000000,565.000000,"
@@ -306,7 +316,7 @@ def test_logger_rows_alert_and_debounce(
 
     clock.now += 61
     ctl.tick()
-    rows = [x for x in lines(log_path) if not x.endswith(",ALERT")][1:]
+    rows = [x for x in lines(log_path) if x.endswith(",DATA")]
     assert len(rows) == 2
     first, second = (r.split(",") for r in rows)
     assert first[1:3] == ["561.000000", "565.000000"] and float(first[3]) > -60
@@ -350,7 +360,7 @@ def test_disable_logger_writes_the_partial_interval(
     actions.disable_logger()
     assert not actions.logger_enabled
     body = lines(tmp_path / "e.csv")
-    assert len(body) >= 2 and not body[1].endswith("ALERT")
+    assert len(body) >= 2 and body[1].endswith(",DATA")
     # Ranges are editable again, and the interval is validated.
     assert actions.add_logger_range(500 * MHZ, 510 * MHZ)
     assert not actions.set_logger_interval(0.2) and actions.set_logger_interval(30)
@@ -375,5 +385,104 @@ def test_logger_appends_to_an_existing_file(
     for _ in range(2):
         assert actions.enable_logger(path)
         actions.disable_logger()
-    header = "timestamp_iso,range_start_mhz,range_stop_mhz,max_dbm,peak_mhz"
+    header = "timestamp_iso,range_start_mhz,range_stop_mhz,max_dbm,peak_mhz,kind"
     assert lines(path).count(header) == 1
+
+
+# --- recovery, unfinished recordings, replay details ---------------------------------------------
+
+
+def stale_parts(path: Path, count: int = 256) -> Path:
+    """Leave an unfinished recording behind, as a crash would."""
+    w = RecordingWriter(path, INFO)
+    for i in range(count):
+        w.append(
+            Sweep(600 * MHZ + np.arange(8) * 25_000.0, np.full(8, -90.0, np.float32), float(i))
+        )
+    assert w.wait_idle()
+    return path.with_name(path.name + ".parts")
+
+
+def test_a_crashed_recording_can_be_recovered_from_the_app(
+    ctl: Controller, actions: RecordingActions, tmp_path: Path
+) -> None:
+    connected(ctl)
+    target = tmp_path / "crash.ocrec"
+    parts = stale_parts(target)
+    assert not actions.start_recording(target)
+    assert actions.pending_recovery == parts and "Recover" in ctl.state.message
+    assert not actions.recording and parts.exists()
+    assert actions.recover() and actions.finishing
+    assert not actions.start_recording(target)  # still working on it
+    finish(ctl, actions)
+    assert actions.pending_recovery is None and "Recovered 256 sweeps" in ctl.state.message
+    assert target.exists() and not parts.exists()
+    assert len(list(RecordingReader.open(target).sweeps())) == 256
+    ctl.start()
+    assert actions.start_recording(target)  # the user can record again (name taken: replaced)
+    assert actions.stop_recording()
+    finish(ctl, actions)
+
+
+def test_unfinished_recording_folder_replays(
+    ctl: Controller, actions: RecordingActions, tmp_path: Path
+) -> None:
+    parts = stale_parts(tmp_path / "u.ocrec")
+    assert actions.open_replay(parts)
+    run_until(ctl, lambda: ctl.state.connection == "connected")
+    status = actions.replay_status()
+    assert status is not None and status.total_sweeps == 256
+
+
+def test_stop_and_start_does_not_skip_recorded_sweeps(
+    ctl: Controller, actions: RecordingActions, tmp_path: Path
+) -> None:
+    actions.open_replay(write_recording(tmp_path / "k.ocrec", 40))
+    run_until(ctl, lambda: ctl.state.connection == "connected")
+    actions.set_replay_speed("Max")
+    ctl.start()
+    link = ctl.replay_link
+    assert link is not None
+    deadline = time.monotonic() + 5
+    while link.sweeps.qsize() < 40:  # the worker queued everything; nothing consumed yet
+        assert time.monotonic() < deadline
+        time.sleep(0.003)
+    ctl.stop()
+    for _ in range(5):
+        ctl.tick()  # a stopped replay keeps its queued sweeps
+    assert ctl.state.waterfall.pushes == 0
+    ctl.start()
+    run_until(ctl, lambda: not ctl.state.running)
+    assert ctl.state.waterfall.pushes == 40
+
+
+def test_logger_uses_recorded_time_during_a_replay(
+    ctl: Controller, actions: RecordingActions, tmp_path: Path
+) -> None:
+    actions.open_replay(write_recording(tmp_path / "t.ocrec", 30))
+    run_until(ctl, lambda: ctl.state.connection == "connected")
+    actions.set_replay_speed("Max")
+    actions.add_logger_range(600 * MHZ, 601 * MHZ)
+    actions.set_logger_threshold(-85.0)  # the recorded level rises from -90 by 1 dB per sweep
+    log_path = tmp_path / "replay.csv"
+    assert actions.enable_logger(log_path)
+    ctl.start()
+    run_until(ctl, lambda: not ctl.state.running)
+    actions.disable_logger()
+    alerts = [x for x in lines(log_path) if x.endswith(",ALERT")]
+    assert len(alerts) == 1
+    assert alerts[0].startswith("1970-01-01T00:16:40+00:00,")  # sweep time 1000.006 s, not now
+    assert ctl.state.logger_alert is not None
+
+
+def test_logger_redirects_from_another_layout(
+    ctl: Controller, actions: RecordingActions, tmp_path: Path
+) -> None:
+    connected(ctl)
+    old = tmp_path / "old.csv"
+    old.write_text("timestamp_iso,range_start_mhz,range_stop_mhz,max_dbm,peak_mhz\n")
+    assert actions.enable_logger(old)
+    assert "another layout" in ctl.state.message and "old-1.csv" in ctl.state.message
+    assert actions.logger_status().path == tmp_path / "old-1.csv"
+    actions.disable_logger()
+    assert old.read_text().count("\n") == 1

@@ -189,6 +189,13 @@ def test_live_and_scan_against_the_simulator(tmp_path: Path) -> None:
         assert dpg.get_item_configuration("logger.range.0")["show"]
         app.recording.disable_logger()
         assert app.recording.stop_recording()
+        assert app.frame()
+        assert dpg.get_value("record.status").startswith("Finishing")
+        while app.recording.finishing:
+            assert time.monotonic() < deadline, c.state.message
+            assert app.frame()
+        assert rec.exists() and dpg.does_item_exist("replay.unfinished")
+        assert not dpg.get_item_configuration("record.recover")["show"]
         c.stop()
         c.disconnect()
         while c.state.connection != "disconnected":
