@@ -5,6 +5,8 @@ on:
   workflow_dispatch:
   push:
     tags: ["v*"]
+  # Reused by release.yml, which publishes the artifacts below.
+  workflow_call:
 
 concurrency:
   group: build-${{ github.workflow }}-${{ github.ref }}

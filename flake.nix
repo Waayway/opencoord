@@ -172,6 +172,7 @@
               fileset = lib.fileset.unions [
                 ./pyproject.toml
                 ./tests
+                ./profiles
               ];
             };
             nativeBuildInputs = [ testVenv ];
@@ -220,6 +221,36 @@
           };
         }
       );
+
+      # NixOS: `programs.opencoord.enable = true;` installs the app and its udev rule. The rule
+      # uses TAG+="uaccess", so the logged-in user gets access to the RF Explorer without joining
+      # a group (dialout/uucp is not needed).
+      nixosModules.default =
+        {
+          config,
+          lib,
+          pkgs,
+          ...
+        }:
+        let
+          cfg = config.programs.opencoord;
+        in
+        {
+          options.programs.opencoord = {
+            enable = lib.mkEnableOption "OpenCoord, the RF Explorer spectrum scanner and frequency coordinator";
+            package = lib.mkOption {
+              type = lib.types.package;
+              default = self.packages.${pkgs.stdenv.hostPlatform.system}.default;
+              defaultText = lib.literalExpression "opencoord.packages.\${pkgs.stdenv.hostPlatform.system}.default";
+              description = "The OpenCoord package to install.";
+            };
+          };
+
+          config = lib.mkIf cfg.enable {
+            environment.systemPackages = [ cfg.package ];
+            services.udev.packages = [ cfg.package ];
+          };
+        };
 
       formatter = forAllSystems (pkgs: pkgs.nixfmt);
     };

@@ -1,0 +1,111 @@
+name: Release
+
+# Pushing a tag like v0.1.0 builds every installer (build.yml), the wheel and sdist, and creates a
+# DRAFT GitHub Release with all of them plus SHA256SUMS. Review the draft, then publish it by hand.
+# The container image is pushed to GHCR by docker.yml on the same tag.
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: build installers
+    uses: ./.github/workflows/build.yml
+
+  dist:
+    name: wheel and sdist
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - name: Tag must match the package version
+        run: |
+          version="$(uv run --no-project python -c "import tomllib; print(tomllib.load(open('pyproject.toml', 'rb'))['project']['version'])")"
+          if [ "v${version}" != "${GITHUB_REF_NAME}" ]; then
+            echo "::error::tag ${GITHUB_REF_NAME} does not match pyproject version ${version}"
+            exit 1
+          fi
+      - run: uv build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: opencoord-python
+          path: |
+            dist/*.whl
+            dist/*.tar.gz
+          if-no-files-found: error
+
+  release:
+    name: draft GitHub Release
+    needs: [build, dist]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: opencoord-*
+          path: release
+          merge-multiple: true
+      - name: Checksums
+        working-directory: release
+        run: |
+          ls -l
+          sha256sum -- * > SHA256SUMS
+          cat SHA256SUMS
+      - name: Release notes from CHANGELOG.md
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          # The section "## [<version>] ..." up to the next "## " heading.
+          awk -v v="$version" '
+            /^## / { keep = (index($0, "## [" v "]") == 1); next }
+            keep
+          ' CHANGELOG.md > notes.md
+          if ! grep -q '[^[:space:]]' notes.md; then
+            echo "::warning::no CHANGELOG.md section for ${version}"
+            echo "See CHANGELOG.md for the changes in this release." > notes.md
+          fi
+          {
+            echo
+            echo "Windows and macOS builds are unsigned: see the install notes in the README."
+            echo "Verify downloads with \`sha256sum -c SHA256SUMS\`."
+          } >> notes.md
+          cat notes.md
+      - name: Create the draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          flags=""
+          case "$GITHUB_REF_NAME" in *-*) flags="--prerelease" ;; esac
+          gh release create "$GITHUB_REF_NAME" release/* \
+            --draft $flags \
+            --title "OpenCoord ${GITHUB_REF_NAME#v}" \
+            --notes-file notes.md
+
+  # PyPI is deferred (plan, decision Q11: GitHub Releases only for now), so this job never runs.
+  # To enable it:
+  #   1. On pypi.org create the project "opencoord" (or a pending publisher) and add a trusted
+  #      publisher: owner Waayway, repository opencoord, workflow release.yml, environment pypi.
+  #   2. Create a GitHub environment named "pypi" (optionally with required reviewers).
+  #   3. Remove the `if: false` line below.
+  # No API token is needed: the job authenticates with OIDC (id-token: write).
+  pypi:
+    name: publish to PyPI
+    if: false
+    needs: [dist, release]
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: opencoord-python
+          path: dist
+      - uses: pypa/gh-action-pypi-publish@release/v1

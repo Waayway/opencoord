@@ -49,8 +49,11 @@
     wheel) + the same GL fallback. `nix develop -c uv run opencoord --smoke-frames 5` works. Note: uv in the shell
     recreates `.venv` on the Nix Python.
   - `checks.<system>.pytest`: venv with `workspace.deps.default // { pytest = [ ]; hypothesis = [ ]; }` (not the
-    whole dev group, so no pyinstaller/mypy), source = `pyproject.toml` + `tests/` only, runs
+    whole dev group, so no pyinstaller/mypy), source = `pyproject.toml` + `tests/` + `profiles/` only (the community-profile test reads `profiles/`), runs
     `pytest -m "not ui and not hardware" -p no:cacheprovider`.
+  - `nixosModules.default`: `programs.opencoord.enable` (+ `package`, default the flake package) adds the package to
+    `environment.systemPackages` and `services.udev.packages` (the package ships `lib/udev/rules.d/`); the rule
+    uses `TAG+="uaccess"`, so no group is created or needed. Checked by `nix flake check` and a NixOS eval.
   - `formatter`: `pkgs.nixfmt` (the RFC-style formatter; `nixfmt-rfc-style` is now a deprecated alias). `nix fmt`.
 - Local verification: `nix build && ./result/bin/opencoord --smoke-frames 5`, `nix flake check -L`,
   `nix flake check --all-systems --no-build` (evaluates the darwin/aarch64 outputs without building).
@@ -68,7 +71,7 @@ Base: `ghcr.io/astral-sh/uv:python3.13-bookworm-slim` (build arg `UV_IMAGE`). Ne
 
 | Stage | Purpose |
 |---|---|
-| `test` | copies pyproject/uv.lock/README/LICENSE/src/tests; `uv sync --locked` (venv at `/opt/venv`), `ruff check`, `ruff format --check`, `pytest -m "not ui and not hardware"` |
+| `test` | apt `libx11-6 libgl1` (UI tests import dearpygui), copies pyproject/uv.lock/README/LICENSE/src/tests/profiles; `uv sync --locked` (venv at `/opt/venv`), `ruff check`, `ruff format --check`, `pytest -m "not ui and not hardware"` |
 | `build` | apt `binutils ca-certificates curl file libgl1 libx11-6`; `uv build --out-dir /out/dist` (wheel + sdist); then `COPY packaging`, `uv sync --locked`, `packaging/build.py --appimage` and copy `OpenCoord-*.tar.gz` + `OpenCoord-*.AppImage` to `/out/dist` (needs network for appimagetool + runtime) |
 | `artifacts` | `FROM scratch`, copies `/out/dist/` to `/`. `docker build --target artifacts --output dist/ .` |
 | `runtime` (last = default) | uv base + mesa/X11 apt libs; venv `/opt/venv` with the built wheel (bind-mounted from `build`), `ENTRYPOINT ["opencoord"]`; `opencoord-cli` is reachable with `--entrypoint` |
@@ -133,9 +136,21 @@ The flag must match the host OS. Artifacts land directly in `dist/`:
 | Workflow | What it runs |
 |---|---|
 | `ci.yml` | on push/PR, cancel-in-progress per ref. Jobs: `lint` (ruff check, ruff format --check, mypy); `test` (ubuntu/windows/macos x py 3.11-3.14, `uv sync --locked --python X` + `uv run --python X pytest -m "not ui and not hardware"`, overrides `.python-version`); `ui-smoke` (apt xvfb + mesa/X11 libs, `xvfb-run -a uv run pytest -m ui`). Actions: checkout@v4, setup-uv@v5 (cache on) |
-| `build.yml` | PR, `workflow_dispatch`, tags `v*`; cancel-in-progress per ref; matrix `ubuntu-22.04` / `ubuntu-22.04-arm` / `windows-latest` / `macos-14`: `uv sync --locked`, `packaging/build.py --appimage|--installer|--dmg`, smoke `--smoke-frames 5` (Linux: apt xvfb + mesa, onedir and AppImage under `xvfb-run -a` with `APPIMAGE_EXTRACT_AND_RUN=1`; Windows: `choco install innosetup` if missing, `Start-Process -Wait -PassThru` on the onedir exe, then silent install `/VERYSILENT` and smoke the installed exe; macOS: `OpenCoord.app/Contents/MacOS/OpenCoord`). Uploads `opencoord-linux-x86_64`, `opencoord-linux-aarch64`, `opencoord-windows-x86_64`, `opencoord-macos-arm64`. No Intel macOS job |
+| `build.yml` | PR, `workflow_dispatch`, tags `v*`, `workflow_call` (used by `release.yml`); cancel-in-progress per ref; matrix `ubuntu-22.04` / `ubuntu-22.04-arm` / `windows-latest` / `macos-14`: `uv sync --locked`, `packaging/build.py --appimage|--installer|--dmg`, smoke `--smoke-frames 5` (Linux: apt xvfb + mesa, onedir and AppImage under `xvfb-run -a` with `APPIMAGE_EXTRACT_AND_RUN=1`; Windows: `choco install innosetup` if missing, `Start-Process -Wait -PassThru` on the onedir exe, then silent install `/VERYSILENT` and smoke the installed exe; macOS: `OpenCoord.app/Contents/MacOS/OpenCoord`). Uploads `opencoord-linux-x86_64`, `opencoord-linux-aarch64`, `opencoord-windows-x86_64`, `opencoord-macos-arm64`. No Intel macOS job |
 | `nix.yml` | on push/PR, cancel-in-progress per ref; ubuntu-latest + macos-latest: DeterminateSystems `nix-installer-action` + `magic-nix-cache-action`, `nix flake check -L`, `nix build -L`, `./result/bin/opencoord --version` |
 | `docker.yml` | push/PR/tags `v*`: buildx + build-push-action (GHA cache, per-target scopes): `test` target, `runtime` target (loaded, `--version` check), `artifacts` target (`outputs: type=local,dest=dist`: wheel, sdist, Linux tar.gz + AppImage; uploaded as `docker-dist`); on `v*` tags also login + metadata + push runtime to `ghcr.io/waayway/opencoord` (`packages: write`) |
-| `release.yml` | on `v*` tag: collect all artifacts + `SHA256SUMS` into a GitHub Release; optional PyPI trusted publishing |
+| `release.yml` | on `v*` tag: `build` (calls `build.yml` via `workflow_call`), `dist` (checks the tag equals the `pyproject.toml` version, `uv build`, uploads `opencoord-python`), `release` (downloads every `opencoord-*` artifact with `merge-multiple`, writes `SHA256SUMS`, takes the notes from the `## [<version>]` section of `CHANGELOG.md` with awk, `gh release create --draft`, `--prerelease` for tags containing `-`), `pypi` (trusted publishing via `pypa/gh-action-pypi-publish`, **disabled with `if: false`**, setup steps in a comment; plan Q11). Nothing is published automatically: the draft is reviewed by hand. The `if: false` lint note is silenced in `.github/actionlint.yaml`. Validate workflows with `uvx --from actionlint-py actionlint` |
 
 Rule: every shipped artifact must be reproducible from a clean GitHub runner. No manual release steps.
+
+## Release readiness files (Task 23)
+- `README.md` (features, install per OS, supported models, quick start, legal notice), `CONTRIBUTING.md` (incl. how to
+  add a channel plan / profile / model, the skill-update rule, release steps), `CHANGELOG.md` (`## [0.1.0] - unreleased`;
+  `release.yml` extracts the section for the tag), `.github/ISSUE_TEMPLATE/{bug,device_profile,channel_plan,config}.yml`.
+- `profiles/`: community device profiles (`README.md` + `example-70cm-amateur-handheld.toml`);
+  `tests/coord/test_community_profiles.py` parses every `profiles/*.toml` with `parse_profile` and the built-in presets.
+- Screenshots: `docs/screenshots/{spectrum,analysis,coordination}.png` (< 500 KB) come from the simulator via
+  `uv run python docs/make_screenshots.py` (run under `xvfb-run -a` on a headless box; it drives `App` and uses
+  `App.capture_window`). Regenerate when the UI changes visibly.
+- The version stays `0.1.0.dev0` until the maintainer bumps it and tags; `release.yml` refuses a tag that differs
+  from the `pyproject.toml` version.

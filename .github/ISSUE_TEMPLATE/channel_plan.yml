@@ -1,0 +1,36 @@
+name: Channel plan
+description: Request or share a channel plan and band annotations for another country or band
+labels: ["channel plan"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Channel plans draw the channel grid and mark bands as allowed, forbidden or informational.
+        Legality flags are informational only, so please link the regulator's official source.
+  - type: input
+    id: region
+    attributes:
+      label: Country or region
+    validations:
+      required: true
+  - type: textarea
+    id: grid
+    attributes:
+      label: Channel raster
+      description: "For example 'DVB-T channels 21-48, width 8 MHz, centre = 306 + 8 x N MHz'."
+    validations:
+      required: true
+  - type: textarea
+    id: bands
+    attributes:
+      label: Bands and their status for wireless microphones / IEMs
+      description: "Frequency ranges in MHz, allowed / forbidden / informational, with a note (licence needed, power limit, ...)."
+    validations:
+      required: true
+  - type: input
+    id: source
+    attributes:
+      label: Regulator source and date
+      description: Link to the official document and the date or version you checked.
+    validations:
+      required: true

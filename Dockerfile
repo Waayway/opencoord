@@ -12,9 +12,14 @@ WORKDIR /src
 ENV UV_LINK_MODE=copy \
     UV_PYTHON_DOWNLOADS=never \
     UV_PROJECT_ENVIRONMENT=/opt/venv
+# Dear PyGui is imported (not run) by the UI tests that need no display.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends libx11-6 libgl1 \
+ && rm -rf /var/lib/apt/lists/*
 COPY pyproject.toml uv.lock README.md LICENSE ./
 COPY src ./src
 COPY tests ./tests
+COPY profiles ./profiles
 RUN uv sync --locked
 RUN uv run --no-sync ruff check \
  && uv run --no-sync ruff format --check
