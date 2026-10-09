@@ -7,7 +7,8 @@ result.
 
 Opening a session while a device is connected never touches the device: acquisition is stopped,
 the saved range / mode / resolution become the *selected* settings (the next Start tunes to them),
-and the saved live / max / avg / min traces are displayed until fresh sweeps replace them. The
+and the saved live / max / avg / min traces are displayed until fresh sweeps replace them
+(:meth:`TraceSet.restore`: a sweep on another axis resets them instead of being merged). The
 saved scan trace is shown as the scan trace; references, markers, zones and threshold are replaced.
 """
 
@@ -182,12 +183,13 @@ class FileActions:
         st.selected_marker = st.delta_reference = None
         st.exclusion_zones = _valid_zones(session.exclusion_zones)
 
-        st.traces.reset()
         held = {k: _read_only(session.traces[k]) for k in _HELD_KEYS if k in session.traces}
-        st.traces.live = held.get("live")
-        st.traces.max_hold = held.get("max")
-        st.traces.average = held.get("avg")
-        st.traces.min_hold = held.get("min")
+        st.traces.restore(
+            live=held.get("live"),
+            max_hold=held.get("max"),
+            average=held.get("avg"),
+            min_hold=held.get("min"),
+        )
         st.scan_partial = _read_only(session.traces["scan"]) if "scan" in session.traces else None
         refs = {k: _read_only(t) for k, t in session.traces.items() if _is_reference(k)}
         st.references = dict(sorted(refs.items()))

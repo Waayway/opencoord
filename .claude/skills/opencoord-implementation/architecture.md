@@ -19,7 +19,7 @@ src/opencoord/
     zones.py         pure (done): exclusion zone list helpers (add/update/remove/contains, MAX_EXCLUSION_ZONES = 16)
     offsets.py       pure (done): offset_key(model, config) = model_<code>, offset_sweep / offset_trace
     markers.py       Marker (frozen), level_at, peak, next_peak, delta, MAX_MARKERS = 8 (pure, done)
-    traces.py        pure (done): TraceSet (live/max/avg/min; average = exact mean of last N, dB domain; axis change resets),
+    traces.py        pure (done): TraceSet (live/max/avg/min; average = exact mean of last N, dB domain; axis change — vs the stored axis or any published trace — resets; `restore(live=, max_hold=, average=, min_hold=)` shows saved traces and adopts their axis, averaging window empty),
                      noise_floor (20th percentile), find_peaks (own O(n) prominence, strongest first), detected_carriers
     presets.py       pure (done): RangePreset(name, start_hz, stop_hz), PRESETS (plan §4), available(device_range), find()
     session.py       (done) Session/SessionSettings/DeviceInfo, pure to_json/from_json + encode_traces/decode_traces, save/load of the .opencoord zip; SessionError (schema 2: plan + coordination dicts)

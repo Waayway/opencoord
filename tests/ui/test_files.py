@@ -184,6 +184,76 @@ def test_applied_session_content_is_validated(tmp_path: Path) -> None:
     assert c.state.exclusion_zones == [ExclusionZone(1, 5, 10)]
 
 
+def _session_with_801_points(tmp_path: Path, mode: str) -> Path:
+    c, f = make()
+    feed(c)  # 801 points at 590-610 MHz
+    c.set_mode(mode)
+    c.set_resolution(Resolution.FAST)
+    c.set_range(470 * MHZ, 480 * MHZ)
+    assert f.save(tmp_path / "s.opencoord")
+    assert f.path is not None
+    return f.path
+
+
+def _connected(c: Controller) -> None:
+    c.connect()
+    deadline = time.monotonic() + 5
+    while c.state.connection != "connected":
+        assert time.monotonic() < deadline, c.state.message
+        c.tick()
+        time.sleep(0.005)
+
+
+def test_live_sweeps_replace_the_opened_session_traces(tmp_path: Path) -> None:
+    path = _session_with_801_points(tmp_path, "live")
+    c, f = make()
+    try:
+        assert f.open(path)
+        _connected(c)
+        c.start()
+        deadline = time.monotonic() + 5
+        while c.state.traces.live is None or len(c.state.traces.live.dbm) == 801:
+            assert time.monotonic() < deadline, c.state.message
+            c.tick()
+            time.sleep(0.005)
+        live, mx = c.state.traces.live, c.state.traces.max_hold
+        assert mx is not None
+        assert live.start_hz == mx.start_hz and len(live.dbm) == len(mx.dbm)
+        assert live.start_hz < 590 * MHZ
+    finally:
+        c.shutdown()
+
+
+def test_scan_after_opening_a_session_finishes_and_is_kept(tmp_path: Path) -> None:
+    path = _session_with_801_points(tmp_path, "scan")
+    c, f = make()
+    try:
+        assert f.open(path)
+        _connected(c)
+        c.start()
+        deadline = time.monotonic() + 10
+        while c.state.busy:
+            assert time.monotonic() < deadline, c.state.message
+            c.tick()
+            time.sleep(0.005)
+        assert "Scan done" in c.state.message
+        live = c.state.traces.live
+        assert live is not None and abs(live.start_hz - 470 * MHZ) < MHZ
+    finally:
+        c.shutdown()
+
+
+def test_same_point_count_on_another_span_does_not_mix_with_the_session(tmp_path: Path) -> None:
+    path = _session_with_801_points(tmp_path, "live")
+    c, f = make()
+    assert f.open(path)
+    freqs = 800e6 + 25e3 * np.arange(801, dtype=np.float64)
+    c.state.traces.update(Sweep(freqs, np.full(801, -110.0, dtype=np.float32), 0.0))
+    mx = c.state.traces.max_hold
+    assert mx is not None and mx.start_hz == 800 * MHZ
+    assert float(mx.dbm.max()) == -110.0  # the session's -40 dBm peak is not carried over
+
+
 def test_export_skips_non_finite_points(tmp_path: Path) -> None:
     c, f = make()
     c.state.references["ref1"] = Trace(

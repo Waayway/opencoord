@@ -123,6 +123,73 @@ def test_axis_change_resets_all(second: Sweep) -> None:
     assert ts.max_hold.start_hz == second.start_hz
 
 
+def _trace(dbm: object, start: float = 470e6, label: str = "t") -> Trace:
+    arr = np.asarray(dbm, dtype=np.float32)
+    return Trace(_freqs(len(arr), start), arr, label)
+
+
+@pytest.mark.parametrize(
+    "second",
+    [
+        _sweep([-50, -50, -50, -50]),  # different length
+        _sweep([-50, -50, -50], start=500e6),  # same length, different span
+    ],
+)
+def test_restored_traces_are_replaced_by_a_sweep_on_another_axis(second: Sweep) -> None:
+    ts = TraceSet()
+    ts.update(_sweep([-90, -90, -90], start=800e6))  # stale state from before the restore
+    ts.restore(
+        live=_trace([-10, -10, -10]),
+        max_hold=_trace([-5, -5, -5]),
+        average=_trace([-10, -10, -10]),
+        min_hold=_trace([-20, -20, -20]),
+    )
+    assert ts.max_hold is not None and ts.max_hold.start_hz == 470_000_000
+    ts.update(second)
+    for t in (ts.live, ts.max_hold, ts.average, ts.min_hold):
+        assert t is not None
+        np.testing.assert_array_equal(t.dbm, second.dbm)
+        assert t.start_hz == second.start_hz
+
+
+def test_restored_traces_continue_on_the_same_axis() -> None:
+    ts = TraceSet()
+    ts.restore(
+        live=_trace([-10, -30]),
+        max_hold=_trace([-5, -30]),
+        average=_trace([-10, -30]),
+        min_hold=_trace([-20, -40]),
+    )
+    ts.update(_sweep([-50, -20]))
+    assert ts.max_hold is not None and ts.min_hold is not None and ts.average is not None
+    np.testing.assert_array_equal(ts.max_hold.dbm, np.array([-5, -20], dtype=np.float32))
+    np.testing.assert_array_equal(ts.min_hold.dbm, np.array([-50, -40], dtype=np.float32))
+    # the averaging window starts empty: the restored average is not a sweep
+    np.testing.assert_array_equal(ts.average.dbm, np.array([-50, -20], dtype=np.float32))
+
+
+def test_restore_without_traces_is_a_reset() -> None:
+    ts = TraceSet()
+    ts.update(_sweep([-10, -10]))
+    ts.restore()
+    assert ts.live is ts.max_hold is ts.average is ts.min_hold is None
+    ts.update(_sweep([-1, -2, -3], start=600e6))
+    assert ts.live is not None and len(ts.live.dbm) == 3
+
+
+@pytest.mark.parametrize("key", ["live", "max_hold", "average", "min_hold"])
+def test_update_resets_when_any_published_trace_is_on_another_axis(key: str) -> None:
+    ts = TraceSet()
+    ts.update(_sweep([-10, -10, -10]))
+    setattr(ts, key, _trace([-1, -1, -1], start=900e6))  # e.g. assigned from outside
+    second = _sweep([-50, -60, -70])
+    ts.update(second)
+    for t in (ts.live, ts.max_hold, ts.average, ts.min_hold):
+        assert t is not None
+        np.testing.assert_array_equal(t.dbm, second.dbm)
+        assert t.start_hz == second.start_hz
+
+
 def test_traces_do_not_alias_input_or_each_other() -> None:
     ts = TraceSet()
     s = _sweep([-90, -80])

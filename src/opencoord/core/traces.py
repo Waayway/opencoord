@@ -25,6 +25,10 @@ def _frozen(a: npt.NDArray[np.generic]) -> None:
     a.setflags(write=False)
 
 
+def _axes_equal(a: npt.NDArray[np.float64], b: npt.NDArray[np.float64]) -> bool:
+    return len(a) == len(b) and a[0] == b[0] and a[-1] == b[-1]
+
+
 class TraceSet:
     """Live, max-hold, average and min-hold traces built from successive sweeps.
 
@@ -33,8 +37,10 @@ class TraceSet:
       between min-hold and max-hold. Before ``average_count`` sweeps have arrived it is the mean
       of those received so far.
     * Max/min hold accumulate since the last :meth:`reset`.
-    * A sweep whose axis differs from the current one (different length, start or stop)
-      resets every trace and starts over with that sweep.
+    * A sweep whose axis differs from the current one, or from the axis of any published trace
+      (different length, start or stop), resets every trace and starts over with that sweep.
+    * :meth:`restore` shows saved traces (a session): the next sweep on the same axis continues
+      their max/min hold, any other sweep replaces them.
 
     Trace objects are never mutated after being published; each update creates new arrays, and
     the published arrays are read-only. Sweeps containing non-finite levels (NaN/inf) are rejected
@@ -80,6 +86,28 @@ class TraceSet:
         self._freqs = None
         self.live = self.max_hold = self.average = self.min_hold = None
 
+    def restore(
+        self,
+        *,
+        live: Trace | None = None,
+        max_hold: Trace | None = None,
+        average: Trace | None = None,
+        min_hold: Trace | None = None,
+    ) -> None:
+        """Replace everything with saved traces (e.g. from a session).
+
+        The stored axis becomes that of the first restored trace, so a following sweep on the same
+        axis continues the max/min hold and any other sweep resets everything. The averaging
+        window starts empty (the saved average is shown until the first sweep, which then starts
+        a fresh average) because the sweeps behind a saved average are not known.
+        """
+        self.reset()
+        self.live, self.max_hold, self.average, self.min_hold = live, max_hold, average, min_hold
+        first = next((t for t in (live, max_hold, average, min_hold) if t is not None), None)
+        if first is not None:
+            self._freqs = np.array(first.freqs_hz, dtype=np.float64)
+            _frozen(self._freqs)
+
     def update(self, sweep: Sweep) -> None:
         """Fold a sweep into all traces."""
         if len(sweep.freqs_hz) == 0 or len(sweep.freqs_hz) != len(sweep.dbm):
@@ -113,10 +141,10 @@ class TraceSet:
         self._publish_average()
 
     def _same_axis(self, freqs: npt.NDArray[np.float64]) -> bool:
-        cur = self._freqs
-        if cur is None:
-            return True
-        return len(cur) == len(freqs) and cur[0] == freqs[0] and cur[-1] == freqs[-1]
+        """``freqs`` matches the stored axis and the axis of every published trace."""
+        traces = (self.live, self.max_hold, self.average, self.min_hold)
+        axes = [self._freqs] + [t.freqs_hz for t in traces if t is not None]
+        return all(cur is None or _axes_equal(cur, freqs) for cur in axes)
 
     def _publish_average(self) -> None:
         assert self._sum is not None and self._freqs is not None
