@@ -728,3 +728,42 @@ def test_performance_40_devices_within_budget() -> None:
     assert elapsed < 5.0
     assert plan.stats.complete
     assert_clean(plan, req)
+
+
+# --- human-readable explanations (UI + exporters) ---------------------------------------------
+
+
+def test_describe_violation_carrier_and_product() -> None:
+    from opencoord.coord.solver import Violation, describe_violation
+
+    carrier = Violation("carrier", 350 * KHZ, 100 * KHZ, ("A #1", "B #1"), None, None)
+    assert describe_violation(carrier) == (
+        "carrier spacing: A #1 and B #1 are 100 kHz apart (needs 350 kHz)"
+    )
+    hit = Violation("im3_2tx", 100 * KHZ, 25 * KHZ, ("A #1", "B #1"), "C #1", 600_100_000)
+    assert describe_violation(hit) == (
+        "3rd order 2-Tx: product of A #1, B #1 at 600.100 MHz is 25 kHz from C #1 (needs 100 kHz)"
+    )
+    # A candidate that is itself hit has no victim label.
+    own = Violation("im5_2tx", 50 * KHZ, 0, ("A #1", "B #1"), None, 600_000_000)
+    assert describe_violation(own).endswith("is 0 kHz from this frequency (needs 50 kHz)")
+
+
+def test_describe_unassigned_gives_reason_and_blocker() -> None:
+    from opencoord.coord.solver import REASON_TEXT, Unassigned, Violation, describe_unassigned
+
+    assert set(REASON_TEXT) == {
+        "no-candidates-in-range",
+        "all-candidates-excluded",
+        "all-candidates-occupied",
+        "imd-conflicts",
+        "time-budget",
+    }
+    plain = Unassigned("Mic #3", "Mic", "all-candidates-occupied")
+    assert describe_unassigned(plain) == REASON_TEXT["all-candidates-occupied"]
+    v = Violation("carrier", 350 * KHZ, 25 * KHZ, ("Mic #1", "Mic #2"), None, None)
+    blocked = Unassigned("Mic #3", "Mic", "imd-conflicts", v)
+    assert describe_unassigned(blocked) == (
+        f"{REASON_TEXT['imd-conflicts']}; best spot blocked by carrier spacing: Mic #1 and "
+        "Mic #2 are 25 kHz apart (needs 350 kHz)"
+    )

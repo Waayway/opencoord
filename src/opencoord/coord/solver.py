@@ -397,14 +397,51 @@ def _violations(txs: Sequence[_Tx]) -> list[tuple[Violation, frozenset[CarrierId
     return out
 
 
-def _describe(v: Violation) -> str:
+#: Short names of the rules for messages.
+RULE_TEXT: Mapping[str, str] = types.MappingProxyType(
+    {
+        "carrier": "carrier spacing",
+        "im3_2tx": "3rd order 2-Tx",
+        "im3_3tx": "3rd order 3-Tx",
+        "im5_2tx": "5th order 2-Tx",
+        "im7_2tx": "7th order 2-Tx",
+        "im5_3tx": "5th order 3-Tx",
+    }
+)
+#: Why a device got no frequency, in words.
+REASON_TEXT: Mapping[Reason, str] = types.MappingProxyType(
+    {
+        "no-candidates-in-range": "the profile has no frequencies to choose from",
+        "all-candidates-excluded": (
+            "every frequency of the profile is in an exclusion zone or a forbidden band"
+        ),
+        "all-candidates-occupied": "every frequency of the profile is occupied in the scan",
+        "imd-conflicts": (
+            "no frequency left that is clear of the other carriers and their intermods"
+        ),
+        "time-budget": "the time budget ran out before a frequency was found",
+    }
+)
+
+
+def describe_violation(v: Violation) -> str:
+    """One line explaining a broken rule (labels, MHz and kHz)."""
     if v.product_hz is None:
         who = " and ".join(v.sources)
         return f"carrier spacing: {who} are {_khz(v.actual_hz)} apart (needs {_khz(v.required_hz)})"
+    victim = v.victim if v.victim is not None else "this frequency"
     return (
-        f"{v.rule}: product of {', '.join(v.sources)} at {_mhz(v.product_hz)} is "
-        f"{_khz(v.actual_hz)} from {v.victim} (needs {_khz(v.required_hz)})"
+        f"{RULE_TEXT.get(v.rule, v.rule)}: product of {', '.join(v.sources)} at "
+        f"{_mhz(v.product_hz)} is {_khz(v.actual_hz)} from {victim} (needs {_khz(v.required_hz)})"
     )
+
+
+def describe_unassigned(u: Unassigned) -> str:
+    """Why ``u`` has no frequency, plus what blocks its best spot when known."""
+    text = REASON_TEXT[u.reason]
+    if u.blocked_by is not None:
+        text += f"; best spot blocked by {describe_violation(u.blocked_by)}"
+    return text
 
 
 def _locked_txs(request: CoordinationRequest) -> list[_Tx]:
@@ -415,7 +452,7 @@ def _locked_txs(request: CoordinationRequest) -> list[_Tx]:
 
 
 def _locked_clash_warnings(locked: Sequence[_Tx]) -> list[str]:
-    return [f"Locked carriers clash: {_describe(v)}" for v, _ in _violations(locked)]
+    return [f"Locked carriers clash: {describe_violation(v)}" for v, _ in _violations(locked)]
 
 
 # ---------------------------------------------------------------------------- preparation
@@ -870,7 +907,7 @@ def check(assignments: Sequence[Assignment], request: CoordinationRequest) -> Ch
         if any(isinstance(cid, tuple) and cid[0] == "device" for cid in ids):
             violations.append(v)
         else:
-            warnings.append(f"Locked carriers clash: {_describe(v)}")
+            warnings.append(f"Locked carriers clash: {describe_violation(v)}")
 
     if assignments:
         f = np.array([a.freq_hz for a in assignments], dtype=np.int64)
@@ -893,6 +930,8 @@ def check(assignments: Sequence[Assignment], request: CoordinationRequest) -> Ch
 
 __all__ = [
     "MAX_DEVICES",
+    "REASON_TEXT",
+    "RULE_TEXT",
     "Assignment",
     "CheckReport",
     "CoordinationRequest",
@@ -903,5 +942,7 @@ __all__ = [
     "Unassigned",
     "Violation",
     "check",
+    "describe_unassigned",
+    "describe_violation",
     "solve",
 ]

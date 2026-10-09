@@ -148,6 +148,11 @@ the locked carriers **and every backup chosen before it**, which is then `add`ed
 all backups together pass `check`), `warnings` (clashes among locked carriers, assignments in forbidden bands), `stats`
 (`SolveStats(elapsed_s, nodes, complete, timed_out)`).
 
+Explanations for UI and exports: `describe_violation(v)` (one line; rule names from `RULE_TEXT`, e.g. "3rd order
+2-Tx"; a hit candidate without victim reads "from this frequency"), `REASON_TEXT` (reason -> words) and
+`describe_unassigned(u)` (reason plus "best spot blocked by ..." when `blocked_by` is set). Coordination UI, plan
+persistence and exports: `ui.md` "Coordination tab", `io-formats.md`.
+
 `check`: carriers = locked + the given assignments (rules by `profile_name`; unknown profile or duplicate label ->
 `ValueError`). Independent of the search: carrier pairs directly, products from `ProductSet.products()` of all
 carriers (ranges = each carrier ±1 Hz), each product against every carrier that is not one of its sources within the
