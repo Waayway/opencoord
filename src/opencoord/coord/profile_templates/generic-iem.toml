@@ -1,0 +1,6 @@
+[profile]
+name = "Generic IEM"
+kind = "iem"
+tuning = [[518.0, 542.0]]
+step_khz = 25
+spacing = "iem"

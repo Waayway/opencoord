@@ -25,7 +25,7 @@ src/opencoord/
     session.py       (done) Session/SessionSettings/DeviceInfo, pure to_json/from_json + encode_traces/decode_traces, save/load of the .opencoord zip; SessionError
     settings.py      AppSettings + load()/save() of settings.toml via platformdirs (done)
   coord/
-    profiles.py      DeviceProfile, SpacingRules, TOML load/save, templates
+    profiles.py      DeviceProfile, parse/validate/serialise, candidates(), templates (done); spacing.py SpacingRules + presets (done); io/profile_store.py file load/save (done)
     imd.py           pure numpy intermod product generation
     solver.py        pure: solve(request) → Plan
     channel_plans/   __init__ (available/load via importlib.resources), model.py (parse_plan, dataclasses), eu.toml (done)

@@ -1,0 +1,13 @@
+# Starting point only: these values are user-configurable (edit in the Spacing editor or this file).
+# All values are kHz; 0 disables a rule.
+[preset]
+name = "iem"
+description = "In-ear monitor transmitters"
+
+[spacing]
+carrier = 600
+im3_2tx = 200
+im3_3tx = 100
+im5_2tx = 100
+im7_2tx = 100
+im5_3tx = 0
