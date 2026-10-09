@@ -45,16 +45,22 @@ _KEYS = {
 }
 
 
-def bind(controller: Controller, text_inputs: Sequence[str]) -> None:
+def bind(
+    controller: Controller,
+    text_inputs: Sequence[str],
+    typing: Callable[[], bool] | None = None,
+) -> None:
     """Register the key handlers (call once after the layout is built).
 
     ``text_inputs`` are the tags of the text/number fields; a shortcut does nothing while one
-    of them is being edited.
+    of them is being edited. ``typing`` covers fields that are created later (rebuilt editors).
     """
 
     def make(shortcut: Shortcut) -> Callable[..., None]:
         def handler(*_: object) -> None:
             if any(dpg.is_item_active(tag) for tag in text_inputs):
+                return
+            if typing is not None and typing():
                 return
             if dpg.is_key_down(dpg.mvKey_ModCtrl) or dpg.is_key_down(dpg.mvKey_ModAlt):
                 return

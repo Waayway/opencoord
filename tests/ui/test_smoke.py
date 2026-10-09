@@ -4,6 +4,7 @@ Dear PyGui cannot reliably create a second viewport in one process (it segfaults
 test here opens a window in-process; ``--smoke-frames`` runs in a subprocess.
 """
 
+import inspect
 import logging
 import os
 import subprocess
@@ -62,6 +63,7 @@ def test_live_and_scan_against_the_simulator(tmp_path: Path) -> None:
     from opencoord.core.settings import AppSettings
     from opencoord.device.scanner import Resolution
     from opencoord.device.simulator import SimulatedLink
+    from opencoord.io.profile_store import ProfileStore
     from opencoord.ui.app import App
     from opencoord.ui.controller import Controller
 
@@ -70,7 +72,9 @@ def test_live_and_scan_against_the_simulator(tmp_path: Path) -> None:
         port_lister=lambda: [],
         simulator=True,
     )
-    app = App(c, AppSettings())
+    (tmp_path / "cfg" / "profiles").mkdir(parents=True)
+    (tmp_path / "cfg" / "profiles" / "broken.toml").write_text("[profile]\nname = 'x'\n")
+    app = App(c, AppSettings(), profile_store=ProfileStore(tmp_path / "cfg"))
     app.build()
     try:
         deadline = time.monotonic() + 5
@@ -215,6 +219,96 @@ def test_live_and_scan_against_the_simulator(tmp_path: Path) -> None:
         assert dpg.get_value("replay.position") == pytest.approx(1.0)
         assert "ended" in dpg.get_value("replay.info")
         assert dpg.get_item_configuration("replay.play")["label"] == "Play"
+        # Profiles tab: load issue, template, widget edits, mode switch, save, delete confirm.
+        dpg.set_value("tabs", "tab.profiles")
+        pa = app.profiles
+
+        def fire(tag: str, value: object = None) -> None:
+            """Call a widget's callback like Dear PyGui would (as many arguments as it takes)."""
+            callback = dpg.get_item_callback(tag)
+            assert callback is not None
+            n = len(inspect.signature(callback).parameters)
+            callback(*(tag, value, dpg.get_item_user_data(tag))[:n])
+
+        for _ in range(2):
+            assert app.frame()
+        assert not dpg.get_item_configuration("profiles.editor")["show"]
+        assert not app.profiles_panel.is_typing()
+        issue_texts = [
+            dpg.get_value(i)
+            for i in dpg.get_item_children("profiles.issues", 1)
+            if dpg.get_value(i)
+        ]
+        assert any(t.startswith("broken.toml:") for t in issue_texts)
+        pa.new_from_template("generic-analog-mic")
+        for _ in range(2):
+            assert app.frame()
+        assert dpg.get_item_configuration("profiles.editor")["show"]
+        assert dpg.get_value("profiles.name") == "Generic analog mic"
+        assert "[not saved yet]" in dpg.get_value("profiles.header")
+        assert dpg.get_value("profiles.range.0.stop") == pytest.approx(832.0)
+        assert "361 candidate" in dpg.get_value("profiles.preview")
+        assert dpg.get_item_configuration("profiles.save")["enabled"]
+        assert dpg.get_value("profiles.override.im3_2tx.effective") == "100 kHz"
+        # A widget edit goes through its callback into the draft; an invalid range shows red text.
+        dpg.set_value("profiles.range.0.stop", 800.0)
+        fire("profiles.range.0.stop", 800.0)
+        assert app.frame()
+        assert "start must be below stop" in dpg.get_value("profiles.errors")
+        assert not dpg.get_item_configuration("profiles.save")["enabled"]
+        dpg.set_value("profiles.range.0.stop", 830.0)
+        fire("profiles.range.0.stop", 830.0)
+        dpg.set_value("profiles.override.im3_2tx.check", True)
+        fire("profiles.override.im3_2tx.check", True)
+        assert app.frame()
+        assert dpg.get_value("profiles.errors") == ""
+        assert dpg.get_value("profiles.override.im3_2tx.effective") == "100 kHz (override)"
+        assert dpg.get_item_configuration("profiles.override.im3_2tx.value")["enabled"]
+        dpg.set_value("profiles.mode", "Groups (banks) of channels")
+        fire("profiles.mode", "Groups (banks) of channels")
+        for _ in range(2):
+            assert app.frame()
+        assert "Saving drops" in dpg.get_value("profiles.mode_warning")
+        assert "Add at least one group" in dpg.get_value("profiles.errors")
+        fire("profiles.group.add")
+        for _ in range(2):
+            assert app.frame()
+        box = "profiles.group.0.channels"
+        dpg.set_value(box, "470.125, 470.250\n471 junk")
+        fire(box, "470.125, 470.250\n471 junk")
+        assert app.frame()
+        assert dpg.get_value(f"{box}.info") == "3 channels; 1 entry not understood"
+        assert "'junk' is not a number" in dpg.get_value("profiles.errors")
+        dpg.set_value(box, "470.125, 470.250\n471")
+        fire(box, "470.125, 470.250\n471")
+        assert app.frame()
+        assert dpg.get_value("profiles.preview").startswith("3 candidate frequencies, 470.125")
+        assert dpg.get_item_configuration("profiles.save")["enabled"]
+        assert pa.save_profile()
+        for _ in range(2):
+            assert app.frame()
+        assert (tmp_path / "cfg" / "profiles" / "generic-analog-mic.toml").exists()
+        assert dpg.get_value("profiles.message") == "Saved profile 'Generic analog mic'"
+        assert "unsaved" not in dpg.get_value("profiles.header")
+        assert not dpg.get_item_configuration("profiles.save")["enabled"]
+        fire("profiles.delete")
+        for _ in range(2):
+            assert app.frame()
+        assert dpg.get_item_configuration("profiles.confirm")["show"]
+        assert "Delete profile" in dpg.get_value("profiles.confirm.text")
+        pa.confirm_pending()
+        for _ in range(2):
+            assert app.frame()
+        assert not dpg.get_item_configuration("profiles.editor")["show"]
+        assert not (tmp_path / "cfg" / "profiles" / "generic-analog-mic.toml").exists()
+        # Spacing presets sub-tab.
+        pa.select_preset("iem")
+        for _ in range(2):
+            assert app.frame()
+        assert dpg.get_value("presets.name") == "iem"
+        assert dpg.get_value("presets.value.carrier") == pytest.approx(600.0)
+        assert dpg.get_item_configuration("presets.reset")["show"]
+        assert dpg.get_value("presets.used_by") == "Not used by any profile"
         # Sessions, export window, file dialog and the PNG plot capture.
         session = tmp_path / "smoke.opencoord"
         assert app.files.save(session)

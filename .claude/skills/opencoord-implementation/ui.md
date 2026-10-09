@@ -8,8 +8,8 @@
   - toolbar (`toolbar.*`): port combo + Connect/Disconnect, Live/Scan radio, preset combo, resolution combo,
     Start/Stop, Reset max hold
   - spectrum plot over the waterfall, in one `subplots(2, 1, link_all_x=True)` so the MHz axes line up
-  - right-hand tab bar (`tabs`, width 370): Device | Scan | Markers | Analysis | Record | Coordination | Profiles; the last
-    two show "Coming soon" until their tasks land
+  - right-hand tab bar (`tabs`, width 370): Device | Scan | Markers | Analysis | Record | Coordination | Profiles; Coordination
+    shows "Coming soon" until its task lands
   - a status bar (`status.line`): connection, mode, range, step/RBW, sweeps/s, last message, fps
 - **Shared widget values:** the toolbar and the panels show the same port/preset/resolution via value-registry
   `source` items (`ui.port_choice`, `ui.preset`, `ui.resolution`). Radio buttons do **not** redraw when their
@@ -133,6 +133,34 @@
   - Replay: Open recording... / Open unfinished recording... (folder; `FileUI.ask(..., directory=True)`) (`open_replay` = `controller.connect("replay:<path>")`, only while disconnected), speed combo 1x/4x/Max, Play/Pause (`toggle_replay_pause`: starts the replay when not running, else pauses), Restart, position bar in %. Shown in Live mode; Scan mode is refused; Start/Stop in the toolbar also play/pause.
   - Logger: checkbox + CSV path, interval (s, >= 1, default 60), alert threshold (own, else the Markers-tab threshold line), range list (<= 8; none = current view range at enable; locked while running) with Add / "Add current view range", status (next row in, rows, alerts) and a red alert line + status-bar text (`state.logger_alert`, cleared by "Clear alert"). `LoggerEngine` is fed the *shown* (offset) sweeps; alerts: log warning + status message + `ALERT` CSV line, debounced per range for one interval; disabling writes the partial interval's rows.
   - The panel caches text/config per tag so a frame without changes makes no DPG call (`_set/_cfg/_value`).
+- **Profiles tab** (Task 21; `panels/profiles.py` `ProfilesPanel`, `ui/profiles_actions.py` `ProfilesActions`, `ui/profile_editor.py`;
+  the last two have no DPG):
+  - `profile_editor.py`: `ProfileDraft` / `PresetDraft` are the editable forms (intent methods: `set_name/kind/preset`,
+    `add_range/remove_range/set_range/set_step_khz`, `paste_channels(text, group=None, append=False)`, `tidy_channels`,
+    `add_group/remove_group/rename_group`, `set_mode`, `set_override/clear_override`, `clone`). **Drafts never build a
+    profile themselves:** `build(preset_names, taken_names)` makes the TOML dict shape (only the selected mode's data) and
+    runs `profile_from_dict` / `preset_from_dict`; `validate()` returns readable errors (`friendly()` strips `[profile]`
+    table names, tuning ranges are 1-based, a name clash is an error). A draft keeps the data of all three frequency
+    sources; `dropped_warning()` says what saving drops. Channel lists are `ChannelList` (free text kept as typed + parsed
+    values); `parse_channel_text` splits on newline/comma/semicolon/space/tab, accepts a trailing `MHz`, reports one error
+    per bad token, and returns sorted unique Hz (Decimal based, so `470.125` is exact; comma is a separator, use a dot).
+    `preview()` = `Preview(count, span, per_group)`, `effective_spacing(preset_rules)` = per rule preset vs used kHz.
+    `dirty` (edited since load/save; clones and imports count as edited), `unsaved` (= dirty or never stored),
+    `revision` (every edit), `structure_version` (rows added/removed, mode change) and `uid` (draft identity).
+  - `ProfilesActions(store, say)`: `startup()` (`seed_defaults()` + `reload()`), `presets/profiles/issues` (LoadIssue list),
+    `draft` / `preset_draft`, `message(+_is_error)`, `pending` (inline confirmation, scope `profile`|`preset`) and `version`.
+    Intents: `new_blank`, `new_from_template`, `select_profile`, `clone_profile`, `save_profile` (rename through
+    `store.rename_profile`), `request_delete_profile` (confirm first; an unsaved draft is just dropped), `import_profile`
+    (opens an unsaved draft; unknown preset falls back to the default one with a note, a taken name gets a suffix),
+    `export_profile`, and for presets `new_preset/select_preset/clone_preset/save_preset/request_delete_preset`,
+    `reset_preset_to_builtin` (also restores a deleted built-in), `missing_builtin_presets`. Switching away from a dirty
+    draft asks first (`pending`). Renaming a preset rewrites the profiles that use it; deleting a preset in use is refused.
+  - `ProfilesPanel`: two sub-tabs (Profiles | Spacing presets), load issues in red at the top, the Save / Clone / Export /
+    Delete row and the red error list sit right under the header (no scrolling to find them). Callbacks only change the
+    draft; `update()` rebuilds `profiles.source` (ranges / channel box / groups) when `(uid, structure_version)` changes
+    and otherwise refreshes texts when a version moved, so typing is never interrupted. `is_typing()` is passed to
+    `shortcuts.bind(typing=...)` because those inputs are created later. Store root is `default_config_dir()`; the smoke
+    run (`--smoke-frames`) uses a temporary folder. `App(..., profile_store=...)` is a required keyword.
 - **Simulator:** `opencoord --simulator` uses `SimulatedLink(sweep_points=512)` (like the WSUB1G+ at Normal/Fine) and
   connects on start; Live over 470-960 MHz is clamped to the 342.37 MHz max span at 512 points.
 - **Language:** English strings inline; no i18n. Labels use ASCII hyphens (default font).

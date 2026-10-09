@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import logging
 import sys
+import tempfile
 import time
 from collections.abc import Sequence
 from dataclasses import dataclass, replace
@@ -24,6 +25,7 @@ from opencoord.core.settings import AppSettings
 from opencoord.device.link import SerialLink, find_ports
 from opencoord.device.link_api import Link
 from opencoord.device.simulator import SimulatedLink
+from opencoord.io.profile_store import ProfileStore
 from opencoord.ui import shortcuts, theme
 from opencoord.ui.controller import Controller, LinkFactory
 from opencoord.ui.file_dialogs import FileUI
@@ -33,8 +35,10 @@ from opencoord.ui.panels import scan as scan_panel
 from opencoord.ui.panels.analysis import AnalysisPanel
 from opencoord.ui.panels.device import DevicePanel
 from opencoord.ui.panels.markers import MarkersPanel
+from opencoord.ui.panels.profiles import ProfilesPanel
 from opencoord.ui.panels.record import RecordPanel
 from opencoord.ui.panels.scan import ScanPanel
+from opencoord.ui.profiles_actions import ProfilesActions
 from opencoord.ui.recording import RecordingActions
 from opencoord.ui.spectrum import TAG_READOUT, SpectrumView
 from opencoord.ui.state import AppState
@@ -131,7 +135,12 @@ class FrameStats:
 
 class App:
     def __init__(
-        self, controller: Controller, settings: AppSettings, session: Path | None = None
+        self,
+        controller: Controller,
+        settings: AppSettings,
+        session: Path | None = None,
+        *,
+        profile_store: ProfileStore,
     ) -> None:
         self.controller = controller
         self.files = FileActions(controller)
@@ -144,6 +153,8 @@ class App:
         self.analysis_panel = AnalysisPanel(controller)
         self.recording = RecordingActions(controller)
         self.record_panel = RecordPanel(controller, self.recording, self.file_ui.ask)
+        self.profiles = ProfilesActions(profile_store, self.files.say)
+        self.profiles_panel = ProfilesPanel(self.profiles, self.file_ui.ask)
         self.spectrum = SpectrumView(controller)
         self.waterfall = WaterfallView()
         self._status_version = -1
@@ -197,9 +208,10 @@ class App:
                         self.analysis_panel.build()
                     with dpg.tab(label="Record", tag="tab.record"):
                         self.record_panel.build()
-                    for name in ("Coordination", "Profiles"):
-                        with dpg.tab(label=name, tag=f"tab.{name.lower()}"):
-                            dpg.add_text(COMING_SOON, color=theme.MUTED_COLOR)
+                    with dpg.tab(label="Coordination", tag="tab.coordination"):
+                        dpg.add_text(COMING_SOON, color=theme.MUTED_COLOR)
+                    with dpg.tab(label="Profiles", tag="tab.profiles"):
+                        self.profiles_panel.build()
             dpg.add_text("", tag="status.line")
         self.file_ui.build_windows()
         dpg.set_primary_window("main", True)
@@ -215,7 +227,9 @@ class App:
                 *self.markers_panel.text_inputs,
                 *self.analysis_panel.text_inputs,
                 *self.record_panel.text_inputs,
+                *self.profiles_panel.text_inputs,
             ],
+            typing=self.profiles_panel.is_typing,
         )
         shortcuts.bind_files(
             {
@@ -226,6 +240,7 @@ class App:
             }
         )
         self.controller.startup()
+        self.profiles.startup()
         if self._session_arg is not None:
             try:
                 opened = self.files.open(self._session_arg)
@@ -299,6 +314,7 @@ class App:
         self.markers_panel.update(state)
         self.analysis_panel.update(state)
         self.record_panel.update(state)
+        self.profiles_panel.update()
         self.spectrum.update(state)
         self.waterfall.update(state)
         self.file_ui.update()
@@ -381,8 +397,15 @@ def main(argv: Sequence[str] | None = None) -> int:
         port_lister=(lambda: []) if args.simulator else find_ports,
         simulator=args.simulator,
     )
-    app = App(controller, settings, args.session)
-    app.run(max_frames=args.smoke_frames)
+    # The smoke run must not touch the user's profile folders.
+    scratch = tempfile.TemporaryDirectory(prefix="opencoord-smoke-") if smoke else None
+    try:
+        store = ProfileStore(Path(scratch.name) if scratch else None)
+        app = App(controller, settings, args.session, profile_store=store)
+        app.run(max_frames=args.smoke_frames)
+    finally:
+        if scratch is not None:
+            scratch.cleanup()
     if not smoke:
         try:
             settings_io.save(app.final_settings)

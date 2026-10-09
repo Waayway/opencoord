@@ -3,7 +3,7 @@
 Status: profiles + spacing (`coord/profiles.py`, `coord/spacing.py`, `io/profile_store.py`) and the IMD engine
 (`coord/imd.py`) and the solver (`coord/solver.py`) are done.
 
-## Device profiles (`coord/profiles.py`, `coord/spacing.py`, `io/profile_store.py`) (done)
+## Device profiles (`coord/profiles.py`, `coord/spacing.py`, `io/profile_store.py`) (done; editor UI: see `ui.md`, Profiles tab)
 Stored as TOML in `<platformdirs config>/profiles/` (spacing presets in `<config>/spacing/`). Built-in templates ship
 as package data in `coord/profile_templates/*.toml` and presets in `coord/spacing_presets/*.toml` (read-only via
 `importlib.resources`, like `channel_plans/`; each package has `available()` / `read_text(name)`).
