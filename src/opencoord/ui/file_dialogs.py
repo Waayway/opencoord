@@ -107,7 +107,7 @@ class FileUI:
     # --- actions -----------------------------------------------------------------------------
 
     def open_session(self) -> None:
-        self._ask("Open session", [SESSION_SUFFIX], self.files.open)
+        self.ask("Open session", [SESSION_SUFFIX], self.files.open)
 
     def save(self) -> None:
         if self.files.path is None:
@@ -117,10 +117,10 @@ class FileUI:
 
     def save_as(self) -> None:
         name = self.files.path.name if self.files.path else f"session{SESSION_SUFFIX}"
-        self._ask("Save session as", [SESSION_SUFFIX], self.files.save, default_name=name)
+        self.ask("Save session as", [SESSION_SUFFIX], self.files.save, default_name=name)
 
     def import_reference(self) -> None:
-        self._ask("Import scan as reference", [".csv", ".txt", ".*"], self.files.import_reference)
+        self.ask("Import scan as reference", [".csv", ".txt", ".*"], self.files.import_reference)
 
     def export_dialog(self) -> None:
         choices = self.files.trace_choices()
@@ -133,7 +133,7 @@ class FileUI:
         fmt = next(f for f in EXPORT_FORMATS if f.label == dpg.get_value(TAG_EXPORT_FORMAT))
         key = str(dpg.get_value(TAG_EXPORT_TRACE)).split(":", 1)[0]
         dpg.configure_item(TAG_EXPORT_WINDOW, show=False)
-        self._ask(
+        self.ask(
             f"Export {fmt.label}",
             [fmt.suffix],
             lambda path: self._export_to(fmt.key, key, path),
@@ -148,7 +148,7 @@ class FileUI:
 
     # --- dialogs -----------------------------------------------------------------------------
 
-    def _ask(
+    def ask(
         self,
         title: str,
         extensions: list[str],

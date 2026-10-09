@@ -2,8 +2,8 @@
 
 Layout: a toolbar (port + connect, mode, preset, resolution, start/stop, reset max hold), the
 spectrum plot over the waterfall (x axes linked), a right-hand tab bar (Device | Scan | Markers |
-Analysis | Coordination | Profiles) and a status bar. The frame loop is manual: each frame calls
-``Controller.tick()``, lets the views push changed data to Dear PyGui, then renders.
+Analysis | Record | Coordination | Profiles) and a status bar. The frame loop is manual: each
+frame calls ``Controller.tick()``, lets the views push changed data to Dear PyGui, then renders.
 """
 
 from __future__ import annotations
@@ -33,7 +33,9 @@ from opencoord.ui.panels import scan as scan_panel
 from opencoord.ui.panels.analysis import AnalysisPanel
 from opencoord.ui.panels.device import DevicePanel
 from opencoord.ui.panels.markers import MarkersPanel
+from opencoord.ui.panels.record import RecordPanel
 from opencoord.ui.panels.scan import ScanPanel
+from opencoord.ui.recording import RecordingActions
 from opencoord.ui.spectrum import TAG_READOUT, SpectrumView
 from opencoord.ui.state import AppState
 from opencoord.ui.waterfall import WaterfallView
@@ -108,6 +110,8 @@ def status_line(state: AppState) -> str:
         parts.append(f"step {cfg.step_hz / 1e3:.1f} kHz{rbw}")
     if state.running and state.mode == "live":
         parts.append(f"{state.sweeps_per_s:.1f} sweeps/s")
+    if state.logger_alert:
+        parts.append(state.logger_alert)
     parts.append(state.message)
     return "   |   ".join(parts)
 
@@ -138,6 +142,8 @@ class App:
         self.scan_panel = ScanPanel(controller)
         self.markers_panel = MarkersPanel(controller)
         self.analysis_panel = AnalysisPanel(controller)
+        self.recording = RecordingActions(controller)
+        self.record_panel = RecordPanel(controller, self.recording, self.file_ui.ask)
         self.spectrum = SpectrumView(controller)
         self.waterfall = WaterfallView()
         self._status_version = -1
@@ -189,6 +195,8 @@ class App:
                         self.markers_panel.build()
                     with dpg.tab(label="Analysis", tag="tab.analysis"):
                         self.analysis_panel.build()
+                    with dpg.tab(label="Record", tag="tab.record"):
+                        self.record_panel.build()
                     for name in ("Coordination", "Profiles"):
                         with dpg.tab(label=name, tag=f"tab.{name.lower()}"):
                             dpg.add_text(COMING_SOON, color=theme.MUTED_COLOR)
@@ -206,6 +214,7 @@ class App:
                 *self.scan_panel.text_inputs,
                 *self.markers_panel.text_inputs,
                 *self.analysis_panel.text_inputs,
+                *self.record_panel.text_inputs,
             ],
         )
         shortcuts.bind_files(
@@ -289,6 +298,7 @@ class App:
         self.scan_panel.update(state)
         self.markers_panel.update(state)
         self.analysis_panel.update(state)
+        self.record_panel.update(state)
         self.spectrum.update(state)
         self.waterfall.update(state)
         self.file_ui.update()

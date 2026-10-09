@@ -41,7 +41,7 @@ src/opencoord/
 Implemented so far: `__init__.py` (`__version__`), `__main__.py`, `cli.py`,
 `ui/{app,state,controller,spectrum,overlay,waterfall,theme,shortcuts}.py`,
 `ui/panels/{device,scan,markers,analysis}.py`,
-`core/{types,traces,markers,occupancy,analysis,zones,offsets,presets,settings,session}.py`, `io/{png,atomic,export_scan,importers}.py`, `ui/{files,file_dialogs}.py`, `coord/channel_plans/`,
+`core/{types,traces,markers,occupancy,analysis,zones,offsets,presets,settings,session,logger}.py`, `io/{png,atomic,export_scan,importers,recording}.py`, `ui/{files,file_dialogs,recording}.py`, `ui/panels/record.py`, `device/replay.py`, `coord/channel_plans/`,
 `device/{protocol,models,link_api,simulator,link,scanner}.py`; the rest of the tree
 is still to be written. `io/` is deliberately named like the stdlib module; all imports are absolute so it is safe.
 
@@ -75,6 +75,7 @@ UI "Coordinate" ──▶ worker thread: solver.solve(profiles, trace, exclusion
   `partial` is `state.scan_partial`; the result is fed into `TraceSet` as a sweep (repeated scans accumulate max
   hold) and the waterfall. Stop cancels and keeps stepping until the restore is done (`state.stopping`). Idle:
   `hold()` and discard sweeps.
+- **Hooks** (Task 17, keep `controller.py` small): `Controller.on_sweep` (callables `(raw, shown)` per accepted live sweep and per finished scan; `shown` has the amplitude offset, `raw` is what the link delivered), `on_tick(now)` (end of every tick, also when disconnected) and `on_shutdown`; exceptions in a hook are logged, never break acquisition. `ui/recording.py` `RecordingActions(controller, clock=, timestamp=)` registers itself and owns the recorder, replay control and logger (see `ui.md`).
 - Versions: `ui_version` (widgets), `trace_version` (plot series), `WaterfallHistory.version` (texture), so views
   push data to DPG only when it changed.
 

@@ -8,7 +8,7 @@
   - toolbar (`toolbar.*`): port combo + Connect/Disconnect, Live/Scan radio, preset combo, resolution combo,
     Start/Stop, Reset max hold
   - spectrum plot over the waterfall, in one `subplots(2, 1, link_all_x=True)` so the MHz axes line up
-  - right-hand tab bar (`tabs`, width 370): Device | Scan | Markers | Analysis | Coordination | Profiles; the last
+  - right-hand tab bar (`tabs`, width 370): Device | Scan | Markers | Analysis | Record | Coordination | Profiles; the last
     two show "Coming soon" until their tasks land
   - a status bar (`status.line`): connection, mode, range, step/RBW, sweeps/s, last message, fps
 - **Shared widget values:** the toolbar and the panels show the same port/preset/resolution via value-registry
@@ -128,6 +128,11 @@
     (main / expansion, the active one marked) calling `Controller.switch_module(main)`, which stops acquisition,
     calls `link.switch_module`, clears traces and the waterfall; `_sync_device` drops a preset the new module cannot
     tune. The simulator has no expansion, so this is only covered by a fake link in the tests.
+- **Record tab** (Task 17; `panels/record.py` `RecordPanel` + `ui/recording.py` `RecordingActions`, no DPG in the latter):
+  - Recording: path input (+ `FileUI.ask` dialog), Record / Stop recording, "Recording to x: m:ss, N sweeps". `start_recording` needs a connection; the file gets `.ocrec`; sweeps are appended from `Controller.on_sweep` (raw levels, no offset) while Live or a scan runs; recording survives disconnects; stopped/finalised on app exit (`on_shutdown`); disk errors stop it with a message pointing at the `.parts` dir.
+  - Replay: Open recording... (`open_replay` = `controller.connect("replay:<path>")`, only while disconnected), speed combo 1x/4x/Max, Play/Pause (`toggle_replay_pause`: starts the replay when not running, else pauses), Restart, position bar in %. Shown in Live mode; Scan mode is refused; Start/Stop in the toolbar also play/pause.
+  - Logger: checkbox + CSV path, interval (s, >= 1, default 60), alert threshold (own, else the Markers-tab threshold line), range list (<= 8; none = current view range at enable; locked while running) with Add / "Add current view range", status (next row in, rows, alerts) and a red alert line + status-bar text (`state.logger_alert`, cleared by "Clear alert"). `LoggerEngine` is fed the *shown* (offset) sweeps; alerts: log warning + status message + `ALERT` CSV line, debounced per range for one interval; disabling writes the partial interval's rows.
+  - The panel caches text/config per tag so a frame without changes makes no DPG call (`_set/_cfg/_value`).
 - **Simulator:** `opencoord --simulator` uses `SimulatedLink(sweep_points=512)` (like the WSUB1G+ at Normal/Fine) and
   connects on start; Live over 470-960 MHz is clamped to the 342.37 MHz max span at 512 points.
 - **Language:** English strings inline; no i18n. Labels use ASCII hyphens (default font).

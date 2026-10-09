@@ -128,6 +128,8 @@ class AppState:
     model: ModelInfo | None = None
     capabilities: Capabilities | None = None
     config: DeviceConfig | None = None
+    #: The link can be tuned (``False`` for a replay: no scan mode, no span changes).
+    retunable: bool = True
     auto_connect: bool = False
     #: Last device error (shown in the device panel until the next connect).
     error: str | None = None
@@ -170,6 +172,8 @@ class AppState:
     exclusion_zones: list[ExclusionZone] = field(default_factory=list)
     #: Amplitude offsets in dB by device key (see ``Controller.amp_offset_key``); 0 is not stored.
     amp_offsets: dict[str, float] = field(default_factory=dict)
+    #: Latest long-run logger alert (``None`` = none / cleared), shown in the status bar.
+    logger_alert: str | None = None
     ui_version: int = 0
     trace_version: int = 0
 

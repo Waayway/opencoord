@@ -8,6 +8,16 @@ Files are UTF-8 with `\n` line endings; writes are atomic.
 See `architecture.md` "Persistence". Pure: `to_json`, `from_json(text, arrays)`, `encode_traces`, `decode_traces`,
 `build_traces`. Round-trip tests: `tests/core/test_session.py` (incl. Hypothesis on the JSON).
 
+## Recording (`.ocrec`, `io/recording.py`, Task 17)
+Zip: `meta.json` + `chunk_000000.npz`, ... (chunks stored, already compressed). `meta.json`: `schema_version` 1 (newer -> `RecordingError` "update OpenCoord"), `opencoord_version`, `created`, `sweep_count`, `chunks` [{name, sweeps}], `device` {model_name, model_code (code of the *active* module), expansion_code (null), firmware, min_hz, max_hz, amp_top_dbm, amp_bottom_dbm} or null. Chunk (up to 256 sweeps): `t` float64 (`Sweep.timestamp`, wall clock), `start_hz`/`step_hz`/`points` int64, `irregular` uint8, concatenated `dbm` float32, `freqs_irregular` float64 (frequencies of the sweeps whose axis is not exactly `start + i*step`, e.g. a stitched scan; empty otherwise). Sweeps may differ in axis. Pure: `encode_chunk/decode_chunk/meta_to_json/meta_from_json`.
+- `RecordingWriter(path, info, clock=)`: `append`, `poll()` (call every frame), `flush`, `close()`. A chunk is written every 256 sweeps or 5 s (checked in `append`/`poll`) into `<name>.ocrec.parts/` (each file atomic: `chunk_NNNNNN.npz`, then `meta.json`); `close()` flushes, zips to a temp file next to the target, fsyncs, `os.replace`s and deletes the parts dir. An existing non-empty parts dir (unfinished earlier recording) is refused, never overwritten.
+- **Crash recovery:** the parts dir survives; `RecordingReader.open` accepts the dir or the final name when only the dir exists (chunks present but not yet in `meta.json` are counted too), so such a recording replays directly (the Open recording dialog filters `.ocrec`, `.*` shows the folder; `finalize_parts(dir)` zips it). At most the unflushed 256 sweeps / 5 s are lost.
+- Read limits: 8 GiB total / 256 MiB per chunk uncompressed, <= 2^20 points per sweep, bad zip/JSON/chunk -> `RecordingError` (user-facing; a damaged chunk is reported when it is reached). Reading streams one chunk at a time (`RecordingReader.sweeps()`).
+- Step is stored as an integer Hz; a non-uniform axis is stored exactly via `freqs_irregular`.
+
+## Logger CSV (`core/logger.py`, Task 17)
+`timestamp_iso,range_start_mhz,range_stop_mhz,max_dbm,peak_mhz` (UTC ISO seconds; MHz 6 decimals, dBm 1 decimal): one row per range every interval = max level and its frequency since the previous row (ranges with no data in the interval get no row). Alerts append a line with the same five fields plus a trailing `,ALERT` (six fields; a strict CSV reader sees a ragged row). File is appended to; header written only for a new/empty file; flushed per line.
+
 ## Generic CSV (ours, verified by round-trip tests)
 `frequency_mhz,level_dbm` header, `470.000000,-100.5` (6 decimals MHz = 1 Hz, 1 decimal dBm). Detected carriers:
 `frequency_mhz,level_dbm,channel` (channel empty outside the plan; all carriers, not capped at 32).

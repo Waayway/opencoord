@@ -164,6 +164,50 @@ def test_live_and_scan_against_the_simulator(tmp_path: Path) -> None:
         for _ in range(3):
             assert app.frame()
         assert len(seen) > 1 and set(seen) == {threading.get_ident()}
+        # Record tab: recording, logger alert and replay of the file just written.
+        dpg.set_value("tabs", "tab.record")
+        rec = tmp_path / "smoke.ocrec"
+        c.set_mode("live")
+        c.set_range(560 * MHZ, 570 * MHZ)
+        assert app.recording.start_recording(rec)
+        c.start()
+        deadline = time.monotonic() + 8
+        while app.recording.recording_status().sweeps < 5:
+            assert time.monotonic() < deadline, c.state.message
+            assert app.frame()
+        assert app.frame()
+        assert dpg.get_value("record.status").startswith("Recording to smoke.ocrec")
+        assert dpg.get_item_configuration("record.button")["label"] == "Stop recording"
+        app.recording.set_logger_threshold(-70.0)
+        assert app.recording.enable_logger(tmp_path / "smoke.csv")
+        while c.state.logger_alert is None:
+            assert time.monotonic() < deadline, c.state.message
+            assert app.frame()
+        assert app.frame()
+        assert dpg.get_value("logger.alert").startswith("ALERT 563.3")
+        assert dpg.get_value("logger.enable")
+        assert dpg.get_item_configuration("logger.range.0")["show"]
+        app.recording.disable_logger()
+        assert app.recording.stop_recording()
+        c.stop()
+        c.disconnect()
+        while c.state.connection != "disconnected":
+            assert time.monotonic() < deadline, c.state.message
+            assert app.frame()
+        assert app.recording.open_replay(rec)
+        while c.state.connection != "connected":
+            assert time.monotonic() < deadline, c.state.message
+            assert app.frame()
+        app.recording.set_replay_speed("Max")
+        c.start()
+        while c.state.running:
+            assert time.monotonic() < deadline, c.state.message
+            assert app.frame()
+        assert app.frame()
+        assert c.state.message == "End of recording" and not c.state.retunable
+        assert dpg.get_value("replay.position") == pytest.approx(1.0)
+        assert "ended" in dpg.get_value("replay.info")
+        assert dpg.get_item_configuration("replay.play")["label"] == "Play"
         # Sessions, export window, file dialog and the PNG plot capture.
         session = tmp_path / "smoke.opencoord"
         assert app.files.save(session)

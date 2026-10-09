@@ -50,6 +50,7 @@ from opencoord.core.traces import auto_scale_limits
 from opencoord.core.types import DeviceConfig, Sweep, Trace
 from opencoord.device.link import SerialPort, find_ports
 from opencoord.device.link_api import Link
+from opencoord.device.replay import END_MESSAGE, ReplayLink, replay_path
 from opencoord.device.scanner import Resolution, SegmentedScanner
 from opencoord.ui.state import AppState, Mode, WaterfallHistory
 
@@ -142,6 +143,14 @@ class Controller:
         self._analysis: tuple[tuple[object, ...], Analysis | None] | None = None
         #: The scanner's partial trace as received (``state.scan_partial`` has the offset applied).
         self._partial_raw: Trace | None = None
+        #: A replay reported the end of the recording; handled once its sweeps are folded in.
+        self._replay_ended = False
+        #: Observers of finished sweeps (``raw`` as the link delivered it, ``shown`` with the
+        #: amplitude offset applied), called on the UI thread: live sweeps and finished scans.
+        self.on_sweep: list[Callable[[Sweep, Sweep], None]] = []
+        #: Called at the end of every ``tick()`` with the clock time, and from ``shutdown()``.
+        self.on_tick: list[Callable[[float], None]] = []
+        self.on_shutdown: list[Callable[[], None]] = []
 
         depth = min(max(s.waterfall_depth, WATERFALL_DEPTH_MIN), WATERFALL_DEPTH_MAX)
         st = AppState(simulator=simulator, waterfall=WaterfallHistory(depth))
@@ -163,6 +172,12 @@ class Controller:
         self.state = st
 
     # --- helpers ------------------------------------------------------------------------------
+
+    @property
+    def replay_link(self) -> ReplayLink | None:
+        """The connected replay (``None`` when connected to a device or not at all)."""
+        link = self._link
+        return link if isinstance(link, ReplayLink) else None
 
     def _changed(self) -> None:
         self.state.ui_version += 1
@@ -566,12 +581,15 @@ class Controller:
             return
         if st.connection != "disconnected":
             return
-        link = self._factory(port)
+        replay = replay_path(port)
+        link = ReplayLink(replay) if replay is not None else self._factory(port)
         self._connecting = link
         st.connection = "connecting"
         st.port = port
         st.error = None
         target = "the simulator" if st.simulator else port or "an RF Explorer (auto-detect)"
+        if replay is not None:
+            target = f"the recording {replay.name}"
         self._say(f"Connecting to {target}...")
         threading.Thread(
             target=self._open_worker, args=(link,), name="link-open", daemon=True
@@ -613,6 +631,8 @@ class Controller:
         st.running = st.stopping = False
         st.scan_partial = st.scan_progress = self._partial_raw = None
         st.model = st.capabilities = st.config = None
+        st.retunable = True
+        self._replay_ended = False
         st.connection = "disconnecting" if self._closing else "disconnected"
         st.sweeps_per_s = 0.0
         st.trace_version += 1
@@ -627,6 +647,9 @@ class Controller:
 
     def set_mode(self, mode: Mode) -> None:
         if mode == self.state.mode:
+            return
+        if mode == "scan" and not self.state.retunable:
+            self._say("Scan mode needs a live device; a recording can only be shown live")
             return
         if self.state.running:
             self.stop()
@@ -718,9 +741,11 @@ class Controller:
         self._drain_results()
         link = self._link
         if link is None:
+            self._run_tick_hooks(now)
             return
         self._drain_events(link)
         if self._link is None:
+            self._run_tick_hooks(now)
             return
         self._sync_device(link)
         if self._scanner is not None:
@@ -729,7 +754,10 @@ class Controller:
             self._step_live(link, now)
         else:
             _drain(link)
+        if self._replay_ended:
+            self._finish_replay()
         self._update_rate(now)
+        self._run_tick_hooks(now)
 
     def shutdown(self) -> None:
         """Close the link synchronously (app exit).
@@ -738,6 +766,11 @@ class Controller:
         closes are given a few seconds to finish.
         """
         self._shutting_down.set()
+        for hook in self.on_shutdown:
+            try:
+                hook()
+            except Exception:
+                log.warning("shutdown hook failed", exc_info=True)
         self._connecting = None
         link, self._link = self._link, None
         if link is not None:
@@ -776,6 +809,11 @@ class Controller:
             self._link = link
             st.connection = "connected"
             st.model, st.capabilities, st.config = link.model, link.capabilities, link.config
+            st.retunable = getattr(link, "retunable", True)
+            self._replay_ended = False
+            if not st.retunable and st.mode == "scan":
+                st.mode = "live"  # a recording can only be shown live
+                self._update_view_range()
             if not st.simulator:
                 active = getattr(link, "active_port", None)
                 self._connected_port = active[0] if active else st.port
@@ -804,6 +842,8 @@ class Controller:
                 break
             if ev.kind == "error":
                 st.error = ev.message
+            elif ev.kind == "disconnected" and isinstance(link, ReplayLink):
+                self._replay_ended = True  # end of the recording, not a lost device
             elif ev.kind == "disconnected":
                 st.connection = "reconnecting"
             elif ev.kind == "connected" and st.connection == "reconnecting":
@@ -828,11 +868,19 @@ class Controller:
     def _hold(self) -> None:
         if self._link is None:
             return
+        if isinstance(self._link, ReplayLink):
+            self._link.set_paused(True)
+            return
         with contextlib.suppress(NotImplementedError, RuntimeError):
             self._link.hold()
 
     def _start_live(self, link: Link) -> None:
         st = self.state
+        if isinstance(link, ReplayLink):
+            self._replay_ended = False
+            if link.ended:
+                link.rewind()
+            link.set_paused(False)
         self._tune_live(link)
         st.running = True
         self._say(f"Tuning to {_mhz(st.start_hz)}-{_mhz(st.stop_hz)} MHz...")
@@ -870,17 +918,19 @@ class Controller:
         tol = max(config.step_hz, 1000)
         fresh = 0
         for sweep in sweeps:
-            if (
+            if st.retunable and (
                 len(sweep.dbm) != config.sweep_points
                 or abs(sweep.start_hz - config.start_hz) > tol
                 or abs(sweep.stop_hz - config.stop_hz) > tol
             ):
-                continue
+                continue  # predates the retune (a recording has no retune: every sweep counts)
+            shown = self._offset_sweep(sweep)
             try:
-                st.traces.update(self._offset_sweep(sweep))
+                st.traces.update(shown)
             except ValueError:
                 log.debug("skipping a sweep with non-finite levels")
                 continue
+            self._notify_sweep(sweep, shown)
             live = st.traces.live
             assert live is not None
             st.waterfall.push(live)
@@ -896,6 +946,9 @@ class Controller:
 
     def _start_scan(self, link: Link) -> None:
         st = self.state
+        if not st.retunable:
+            self._say("Scan mode needs a live device; a recording can only be shown live")
+            return
         try:
             scanner = SegmentedScanner(link, st.start_hz, st.stop_hz, st.resolution)
         except (RuntimeError, ValueError) as exc:
@@ -930,13 +983,14 @@ class Controller:
             return
         result = scanner.result
         if result is not None:
+            raw = Sweep(result.freqs_hz, result.dbm, time.time())
+            shown = self._offset_sweep(raw)
             try:
-                st.traces.update(
-                    self._offset_sweep(Sweep(result.freqs_hz, result.dbm, time.time()))
-                )
+                st.traces.update(shown)
             except ValueError as exc:
                 self._end_scan(f"Scan failed: {exc}")
                 return
+            self._notify_sweep(raw, shown)
             live = st.traces.live
             assert live is not None
             st.waterfall.push(live)
@@ -958,6 +1012,27 @@ class Controller:
         st.trace_version += 1
         self._hold()
         self._say(message)
+
+    def _notify_sweep(self, raw: Sweep, shown: Sweep) -> None:
+        for observer in self.on_sweep:
+            try:
+                observer(raw, shown)
+            except Exception:  # an observer (recorder, logger) must never break acquisition
+                log.warning("sweep observer failed", exc_info=True)
+
+    def _run_tick_hooks(self, now: float) -> None:
+        for hook in self.on_tick:
+            try:
+                hook(now)
+            except Exception:
+                log.warning("tick hook failed", exc_info=True)
+
+    def _finish_replay(self) -> None:
+        """The recording ended and its sweeps were folded in: stop (the traces stay shown)."""
+        self._replay_ended = False
+        self.state.running = False
+        self._live_awaiting = None
+        self._say(END_MESSAGE)
 
     def _update_rate(self, now: float) -> None:
         elapsed = now - self._rate_since
