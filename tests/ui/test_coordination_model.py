@@ -305,7 +305,12 @@ def sample_result() -> CoordinationResult:
         SolveStats(0.25, 42, False, True),
     )
     return CoordinationResult(
-        plan, (LockRow(615 * MHZ, "Venue", "iem"),), "Max hold", "2026-10-09T10:00:00+00:00"
+        plan,
+        (LockRow(615 * MHZ, "Venue", "iem"),),
+        "Max hold",
+        "2026-10-09T10:00:00+00:00",
+        "setup-key",
+        "scan-key",
     )
 
 
@@ -318,6 +323,7 @@ def test_result_round_trips_through_json() -> None:
     assert isinstance(back.plan.backups, types.MappingProxyType)
     assert back.plan.warnings == r.plan.warnings and back.plan.stats == r.plan.stats
     assert (back.locked, back.scan_label, back.created) == (r.locked, r.scan_label, r.created)
+    assert (back.solve_key, back.scan_key) == ("setup-key", "scan-key")
 
 
 @pytest.mark.parametrize(

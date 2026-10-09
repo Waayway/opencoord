@@ -482,8 +482,10 @@ class CoordinationResult:
     scan_label: str | None
     #: When it was solved (ISO 8601, UTC).
     created: str
-    #: Fingerprint of what it was solved from (``CoordinationActions.solve_key``).
+    #: Fingerprint of the setup it was solved from (``CoordinationActions.solve_key``).
     solve_key: str = ""
+    #: Digest of the scan data used (``None``: no scan); a change only gives a note.
+    scan_key: str | None = None
 
 
 def _violation_to_dict(v: Violation | None) -> dict[str, Any] | None:
@@ -506,6 +508,7 @@ def result_to_dict(result: CoordinationResult) -> dict[str, Any]:
         "created": result.created,
         "scan_label": result.scan_label,
         "solve_key": result.solve_key,
+        "scan_key": result.scan_key,
         "assignments": [
             {
                 "label": a.label,
@@ -631,6 +634,7 @@ def result_from_dict(data: Mapping[str, Any]) -> CoordinationResult:
         _typed(data, "scan_label", str, None),
         _typed(data, "created", str, ""),
         _typed(data, "solve_key", str, ""),
+        _typed(data, "scan_key", str, None),
     )
 
 

@@ -110,6 +110,7 @@ class _Job:
     locked: tuple[LockRow, ...] = ()
     scan_label: str | None = None
     solve_key: str = ""
+    scan_key: str | None = None
     assignments: tuple[Assignment, ...] = ()
     #: Set when the job is abandoned: the solver's clock then jumps past its deadline.
     stop: threading.Event = field(default_factory=threading.Event, compare=False)
@@ -160,8 +161,6 @@ class CoordinationActions:
         self._checker = checker
         self.model = CoordinationModel()
         self.result: CoordinationResult | None = None
-        #: ``model.solve_key()`` of the setup the result was made from.
-        self.result_key: str | None = None
         #: ``(trace_version, digest)`` of the main trace (hashing it once per new data).
         self._scan_digest: tuple[int, str | None] | None = None
         self.check_outcome: CheckOutcome | None = None
@@ -291,6 +290,7 @@ class CoordinationActions:
             locked=tuple(self.model.locks),
             scan_label=None if scan is None else scan.label,
             solve_key=self.solve_key(),
+            scan_key=self._scan_key(),
             stop=stop,
         )
         self._start(job, lambda: self._solver(request))
@@ -364,9 +364,8 @@ class CoordinationActions:
             )
             return
         self.result = CoordinationResult(
-            value, job.locked, job.scan_label, self._timestamp(), job.solve_key
+            value, job.locked, job.scan_label, self._timestamp(), job.solve_key, job.scan_key
         )
-        self.result_key = job.solve_key
         s = value.stats
         total = export_plan.device_count(value)
         self.say(
@@ -388,8 +387,9 @@ class CoordinationActions:
         return self._scan_digest[1]
 
     def solve_key(self) -> str:
-        """Fingerprint of everything a run depends on: the setup (check texts excluded), the
-        profiles and presets it uses, zones, channel plan and the scan data."""
+        """Fingerprint of the setup a run depends on: the model (check texts excluded; includes
+        the "use scan" flag), the profiles and presets it uses, zones and channel plan. The scan
+        data is not part of it (see :attr:`scan_changed`): Live changes it on every sweep."""
         profiles, presets = self.profile_map(), self.presets()
         used = sorted({r.profile for r in self.model.rows if r.quantity > 0})
         context = [
@@ -401,7 +401,6 @@ class CoordinationActions:
             [repr(presets.get(lk.preset)) for lk in self.model.locks],
             repr(tuple(self.controller.state.exclusion_zones)),
             getattr(self.controller.state.channel_plan, "name", None),
-            self._scan_key(),
         ]
         h = hashlib.blake2b(digest_size=16)
         h.update(self.model.solve_key().encode())
@@ -410,13 +409,19 @@ class CoordinationActions:
 
     @property
     def stale(self) -> bool:
-        """The setup, profiles, zones, plan or scan changed since the shown plan was made
-        (check-mode texts do not count)."""
-        return self.result is not None and self.result_key != self.solve_key()
+        """The setup, profiles, presets, zones or channel plan changed since the shown plan was
+        made (check-mode texts and scan data do not count)."""
+        return self.result is not None and self.result.solve_key != self.solve_key()
+
+    @property
+    def scan_changed(self) -> bool:
+        """The scan data differs from what the (not stale) plan used: only a note, the plan stays
+        valid against the data it was made with."""
+        r = self.result
+        return r is not None and not self.stale and r.scan_key != self._scan_key()
 
     def clear_result(self) -> None:
         self.result = None
-        self.result_key = None
         self._bump()
 
     def clear_check(self) -> None:
@@ -508,8 +513,6 @@ class CoordinationActions:
                 self.result = result_from_dict(plan)
             except (ValueError, TypeError, OverflowError) as exc:
                 problems.append(f"the frequency plan ({exc})")
-        # The key saved with the plan: a plan made from other data reopens as stale.
-        self.result_key = self.result.solve_key if self.result is not None else None
         self.check_outcome = None
         self._bump()
         if problems:

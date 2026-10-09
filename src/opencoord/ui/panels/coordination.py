@@ -571,7 +571,7 @@ class CoordinationPanel:
                 dpg.set_value(TAG_LOCK_PRESET, a.default_lock_preset())
         scan = a.controller.resolve_trace("max")
         label = None if scan is None else scan[1].label
-        seen = (a.version, m.revision, a.running, label, a.stale)
+        seen = (a.version, m.revision, a.running, label, a.stale, a.scan_changed)
         if seen == self._seen:
             return
         self._seen = seen
@@ -619,12 +619,14 @@ class CoordinationPanel:
             self._rebuild_results(result)
         plan = result.plan if result else None
         self._set(TAG_STATS, stats_text(plan) if plan else "No plan yet. Press Coordinate.")
-        self._set(
-            TAG_STALE,
-            "The setup or the scan changed since this plan was made; press Coordinate again"
-            if a.stale
-            else "",
-        )
+        if a.stale:
+            note = "The setup changed since this plan was made; press Coordinate again"
+        elif a.scan_changed:
+            note = "Scan data has changed since this plan was made - re-run Coordinate to use it"
+        else:
+            note = ""
+        self._set(TAG_STALE, note)
+        self._cfg(TAG_STALE, color=theme.WARN_COLOR if a.stale else theme.MUTED_COLOR)
         self._set(TAG_WARNINGS, "\n".join(f"! {w}" for w in plan.warnings) if plan else "")
         self._set(TAG_UNASSIGNED, unassigned_text(plan) if plan else "")
         self._set(TAG_BACKUP_LIST, backups_text(plan) if plan else "")

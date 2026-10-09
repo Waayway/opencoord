@@ -16,8 +16,8 @@ Schema 2 (Task 22) adds `coordination` and fills `plan`; v1 files (plan always n
   "imd_margin_hz"}], "unassigned": [{"label", "profile", "reason", "blocked_by": {"rule", "required_hz",
   "actual_hz", "sources", "victim", "product_hz"} | null}], "backups": {profile: [Hz]}, "warnings": [...],
   "stats": {"elapsed_s", "nodes", "complete", "timed_out"}, "locked": [{"freq_hz", "label", "preset"}],
-  "solve_key"}` (`solve_key` = fingerprint of what the plan was made from, so a plan reopened over other data shows
-  as stale). Frequencies must be in (0, 10 GHz] (assignments, backups, locked; setup locks too) and device labels
+  "solve_key", "scan_key"}` (`solve_key` = fingerprint of the setup the plan was made from: a mismatch on reopen
+  shows the plan as stale; `scan_key` = digest of the scan data used, or null: a mismatch only shows a note). Frequencies must be in (0, 10 GHz] (assignments, backups, locked; setup locks too) and device labels
   unique, else the plan is ignored with a message.
   Tests: `tests/ui/test_coordination_model.py` (round trip, bad data), `tests/ui/test_coordination_actions.py`.
 

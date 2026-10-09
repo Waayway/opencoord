@@ -185,9 +185,12 @@
     `clock` is wrapped (`_stoppable`) to jump 1e12 s ahead once set, so `solve` hits its deadline at the next node
     and the thread ends promptly (also on session open and app shutdown);
     `progress_text()` = `Coordinating... (x.x s of up to N s)`. A solver exception becomes "Coordination failed: ...".
-    `solve_key()` = digest of the model's `solve_key()` plus the context (profiles and presets in use, lock
-    presets, zones, channel plan name, digest of the scan trace data, cached per `trace_version`); `stale` compares
-    it with the key stored in the result (saved in the session). Also `fill_check_from_result`, `clear_result`, `set_show_on_spectrum`, `spectrum_lines()`,
+    Two fingerprints are stored with each result (and in the session): `solve_key()` = digest of the model's
+    `solve_key()` (incl. the use-scan flag) plus the context (profiles and presets in use, lock presets, zones,
+    channel plan name) -> a mismatch makes `stale` true (warning note "press Coordinate again"); and `scan_key` =
+    digest of the scan trace data (cached per `trace_version`) -> a mismatch only sets `scan_changed` (muted note
+    "Scan data has changed since this plan was made - re-run Coordinate to use it"), so a plan made while Live runs
+    is not stale. Exports carry neither note. Also `fill_check_from_result`, `clear_result`, `set_show_on_spectrum`, `spectrum_lines()`,
     `document()` / `export(key, path, rgba)` (csv / txt / html via `io/export_plan.py`), `session_parts()` /
     `apply_session(setup, plan)` (`FileActions.coordination` calls them; unreadable parts (`ValueError`, `TypeError`,
     `OverflowError`) are ignored with a message; `FileActions` also turns anything else it raises into a message).
@@ -199,7 +202,7 @@
     "Edit as check", Clear, Export CSV / Text / Printable HTML (HTML = `FileUI.capture_plot` then export), and
     collapsing "Check a hand-made plan" (a MHz box per device row, Check, summary, violation table rule / needs /
     is / involved, warnings). Rows are rebuilt on `(model id, structure_version, profile names, preset names)`;
-    texts refresh on `(version, revision, running, scan label, stale)`; the scan info shows the resolved trace's label. `is_typing()` joins the profiles panel's in
+    texts refresh on `(version, revision, running, scan label, stale, scan_changed)`; the scan info shows the resolved trace's label. `is_typing()` joins the profiles panel's in
     `shortcuts.bind(typing=...)`.
   - Spectrum (`plan_overlay.py` `PlanOverlayView`, owned by `SpectrumView(controller, plan)`): assigned
     frequencies = one `inf_line_series` "Plan" (vermillion, weight 2), backups = "Backups" (same colour, dim); both in

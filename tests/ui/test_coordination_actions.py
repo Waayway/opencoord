@@ -355,26 +355,33 @@ def test_a_setup_edit_during_the_solve_shows_the_result_as_stale(env) -> None:  
     assert ca.stale
 
 
-def test_stale_follows_zones_profiles_and_scan(env, tmp_path: Path) -> None:  # type: ignore[no-untyped-def]
+def test_stale_follows_the_setup_and_scan_changes_only_give_a_note(  # type: ignore[no-untyped-def]
+    env, tmp_path: Path
+) -> None:
     c, pa, ca = env
     feed_max_hold(c, 500.0)
     ca.model.add_device("UHF mic", 2)
     assert ca.coordinate()
     run_until(c, lambda: not ca.running)
-    assert not ca.stale
+    assert not ca.stale and not ca.scan_changed
     zone = c.add_exclusion_zone(600 * MHZ, 601 * MHZ)
-    assert ca.stale
+    assert ca.stale and not ca.scan_changed
     assert zone is not None
     c.remove_exclusion_zone(zone)
     assert not ca.stale
-    c.state.trace_version += 1  # same data, new version: not stale
-    assert not ca.stale
-    ca.model.set_use_scan(False)
+    c.state.trace_version += 1  # same data, new version: nothing changed
+    assert not ca.stale and not ca.scan_changed
+    ca.model.set_use_scan(False)  # the flag is part of the setup
     assert ca.stale
     ca.model.set_use_scan(True)
-    feed_max_hold(c, 520.0)  # new scan data
-    assert ca.stale
-    # The key is saved with the plan: reopened over the same data it is not stale.
+    feed_max_hold(c, 520.0)  # new scan data (e.g. Live running): a note, not stale
+    assert not ca.stale and ca.scan_changed
+    # Editing a profile in use marks the plan stale.
+    store = pa.store
+    store.save_profile(replace(pa.profiles["UHF mic"], step_hz=50_000))
+    pa.reload()
+    assert ca.stale and not ca.scan_changed
+    # Both keys are saved with the plan: reopened over the same data nothing is flagged.
     assert ca.coordinate()
     run_until(c, lambda: not ca.running)
     files = FileActions(c)
@@ -382,13 +389,29 @@ def test_stale_follows_zones_profiles_and_scan(env, tmp_path: Path) -> None:  # 
     path = tmp_path / "s.opencoord"
     assert files.save(path)
     assert files.open(path)
-    assert ca.result is not None and not ca.stale
-    # A plan made from other data reopens as stale.
+    assert ca.result is not None and not ca.stale and not ca.scan_changed
     setup, plan = ca.session_parts()
     assert plan is not None
+    ca.apply_session(setup, {**plan, "scan_key": "other"})
+    assert ca.result is not None and not ca.stale and ca.scan_changed
     ca.apply_session(setup, {**plan, "solve_key": "other"})
     assert ca.result is not None and ca.stale
-    del pa
+
+
+def test_a_plan_made_while_live_runs_is_not_stale(env) -> None:  # type: ignore[no-untyped-def]
+    c, _pa, ca = env
+    c.connect()
+    run_until(c, lambda: c.state.connection == "connected")
+    c.set_range(470 * MHZ, 700 * MHZ)
+    c.start()
+    run_until(c, lambda: c.state.traces.max_hold is not None)
+    ca.model.add_device("UHF mic", 3)
+    assert ca.coordinate()
+    run_until(c, lambda: not ca.running)
+    version = c.state.trace_version
+    run_until(c, lambda: c.state.trace_version > version + 3)
+    assert ca.result is not None and not ca.stale and ca.scan_changed
+    c.stop()
 
 
 def test_unreadable_session_values_never_raise(env) -> None:  # type: ignore[no-untyped-def]
