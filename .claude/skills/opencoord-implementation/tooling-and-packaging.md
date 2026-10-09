@@ -1,4 +1,4 @@
-# Tooling & packaging (planned)
+# Tooling & packaging
 
 ## uv
 - `.python-version` = `3.13` (release builds). CI also tests 3.11–3.14. `requires-python = ">=3.11"`.
@@ -12,6 +12,15 @@
   - `uv run ruff check --fix && uv run ruff format`
   - `uv run mypy src`
   - `uv run opencoord --simulator`
+
+## Project skeleton (implemented)
+- Build backend: `hatchling` (`[tool.hatch.build.targets.wheel] packages = ["src/opencoord"]`); src layout.
+- Tool config lives in `pyproject.toml`: ruff (line 100; rules E,F,W,I,UP,B,SIM,C4,RUF; relative imports banned),
+  mypy (strict override for `opencoord.device.*`, `core.*`, `coord.*`), pytest markers `hardware` and `ui`.
+- `tests/conftest.py` skips `hardware` tests unless `OPENCOORD_HARDWARE=1`; `tests/ui/test_smoke.py` skips without
+  `DISPLAY`/`WAYLAND_DISPLAY`.
+- `opencoord --smoke-frames N` renders N frames and exits 0 (CI / packaging smoke test).
+- Only `src/opencoord/ui/app.py` exists in `ui/` so far; other planned modules are not written yet.
 
 ## Nix flake (`flake.nix`)
 - Built with uv2nix + pyproject-nix + pyproject-build-systems, so the Nix build and devShell resolve from the **same

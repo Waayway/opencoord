@@ -1,6 +1,6 @@
 # Architecture
 
-## Package layout (planned)
+## Package layout
 ```
 src/opencoord/
   __main__.py        python -m opencoord → ui.app.main()
@@ -26,6 +26,9 @@ src/opencoord/
   ui/
     app.py, spectrum.py, waterfall.py, theme.py, shortcuts.py, panels/*.py
 ```
+Implemented so far: `__init__.py` (`__version__`), `__main__.py`, `cli.py`, `ui/app.py`; the rest of the tree
+is still to be written. `io/` is deliberately named like the stdlib module; all imports are absolute so it is safe.
+
 The project uses the `src/` layout so tests always run against the installed package.
 
 ## Data flow
