@@ -631,3 +631,22 @@ def test_no_reply_and_other_messages() -> None:
     assert "No reply" in user_message("no_reply", "/dev/ttyUSB0", "linux")
     assert "tried 2400 baud" in user_message("no_reply", "COM3", "win32", bauds=(2400,))
     assert "boom" in user_message("other", "/dev/ttyUSB0", "linux", detail="boom")
+
+
+def test_raw_sink_receives_every_byte_read() -> None:
+    chunks: list[bytes] = []
+    link = SerialLink(
+        "/dev/ttyUSB0",
+        serial_factory=Factory(FakeSerial(device())),
+        port_lister=lambda: [RFE_PORT],
+        raw_sink=chunks.append,
+    )
+    link.open()
+    try:
+        assert link.active_port == ("/dev/ttyUSB0", 500_000)
+        deadline = time.monotonic() + 2
+        while len(b"".join(chunks)) < len(F1_COMPLETE) and time.monotonic() < deadline:
+            time.sleep(0.01)
+    finally:
+        link.close()
+    assert b"".join(chunks).startswith(F1_COMPLETE)

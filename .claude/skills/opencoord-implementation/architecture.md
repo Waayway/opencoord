@@ -4,7 +4,7 @@
 ```
 src/opencoord/
   __main__.py        python -m opencoord → ui.app.main()
-  cli.py             opencoord-cli: info | sweep | scan (debug / headless)
+  cli.py             opencoord-cli: info [--json] | sweep | record (debug / headless)
   device/
     protocol.py      pure: command builders + incremental byte parser → events (SweepData, ConfigReply, ModelReply, Unknown, ParseError); make_sweep()
     models.py        pure: model code → Capabilities (name, min/max Hz, max span, sweep-point limits, plus/expansion)

@@ -243,8 +243,11 @@ class SerialLink:
         reconnect_max_delay_s: float = 5.0,
         stall_timeout_s: float = 10.0,
         platform: str = sys.platform,
+        raw_sink: Callable[[bytes], None] | None = None,
     ) -> None:
         self._port = port
+        self._raw_sink = raw_sink  # called from the reader thread with every chunk read
+        self._active: tuple[str, int] | None = None
         self._factory = serial_factory
         self._lister = port_lister
         self._bauds = tuple(baud_rates)
@@ -266,6 +269,11 @@ class SerialLink:
         self._in_flight: _Command | None = None
 
     # --- Link properties ---
+
+    @property
+    def active_port(self) -> tuple[str, int] | None:
+        """``(device, baud)`` of the current connection, ``None`` before the first one."""
+        return self._active
 
     @property
     def model(self) -> ModelInfo | None:
@@ -402,6 +410,7 @@ class SerialLink:
         ser.write(protocol.request_config())
         while time.monotonic() - start < budget_s and not self._stop.is_set():
             data = ser.read(max(ser.in_waiting, 1))
+            self._tap(data)
             for event in parser.feed(data):
                 if config is not None:
                     backlog.append(event)
@@ -417,10 +426,15 @@ class SerialLink:
                 resent = True
         return None
 
+    def _tap(self, data: bytes) -> None:
+        if data and self._raw_sink is not None:
+            self._raw_sink(data)
+
     def _adopt(self, conn: _Connection) -> None:
         with self._lock:
             self._model = conn.model
             self._config = conn.config
+            self._active = (conn.port, conn.baud)
             self._capabilities = models.resolve(conn.model, conn.config)
 
     def _connected_message(self, conn: _Connection) -> str:
@@ -518,6 +532,7 @@ class SerialLink:
                     self._in_flight = None
 
             data = ser.read(max(ser.in_waiting, 1))
+            self._tap(data)
             if data:
                 last_data = time.monotonic()
                 for event in conn.parser.feed(data):
