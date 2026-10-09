@@ -1,12 +1,40 @@
 # Import / export formats
 
-Code: `core/session.py`, `io/export_scan.py`, `io/importers.py`, `io/png.py`, `io/atomic.py` (UI side: `ui/files.py`).
+Code: `core/session.py`, `io/export_scan.py`, `io/export_plan.py`, `io/importers.py`, `io/png.py`, `io/atomic.py` (UI side: `ui/files.py`, `ui/coordination_actions.py`).
 All encode/decode functions are pure (`str`/`bytes` in and out); thin `write_*`/`import_file`/`save`/`load` do I/O.
 Files are UTF-8 with `\n` line endings; writes are atomic.
 
 ## Session (`.opencoord`)
 See `architecture.md` "Persistence". Pure: `to_json`, `from_json(text, arrays)`, `encode_traces`, `decode_traces`,
 `build_traces`. Round-trip tests: `tests/core/test_session.py` (incl. Hypothesis on the JSON).
+Schema 2 (Task 22) adds `coordination` and fills `plan`; v1 files (plan always null) are read unchanged.
+- `coordination`: `{"devices": [{"profile", "quantity", "check"}], "locked": [{"freq_hz", "label", "preset"}],
+  "options": {"use_scan", "threshold_db", "guard_khz", "allow_forbidden", "prefer_single_group", "time_budget_s",
+  "backups_per_profile", "override": {"enabled", "scale", "values_khz": {field: kHz}}}}`; missing fields default,
+  numbers are clamped, wrong types are an error.
+- `plan`: `{"created", "scan_label", "assignments": [{"label", "profile", "freq_hz", "group", "scan_level_dbm",
+  "imd_margin_hz"}], "unassigned": [{"label", "profile", "reason", "blocked_by": {"rule", "required_hz",
+  "actual_hz", "sources", "victim", "product_hz"} | null}], "backups": {profile: [Hz]}, "warnings": [...],
+  "stats": {"elapsed_s", "nodes", "complete", "timed_out"}, "locked": [{"freq_hz", "label", "preset"}]}`.
+  Tests: `tests/ui/test_coordination_model.py` (round trip, bad data), `tests/ui/test_coordination_actions.py`.
+
+## Frequency plan exports (`io/export_plan.py`, Task 22)
+Pure encoders over `PlanDocument(plan, locked [(Hz, label)], generated ISO, version, scan_label)`; `write_text`
+is atomic UTF-8. **Every format prints `warning_lines(plan)`**: a "Partial plan: a of n devices ..." notice (when
+devices are missing; "(the time budget ran out)" when timed out), then `Plan.warnings` (forbidden bands, locked
+clashes), then `<label> (<profile>): no frequency - <describe_unassigned>` per missing device.
+- CSV: header `device,profile,frequency_mhz,group,scan_level_dbm,imd_margin_khz` (MHz 3 decimals, dBm and kHz 1
+  decimal, empty when unknown); assigned rows, then unassigned devices (empty frequency), locked carriers (profile
+  `locked`), backups (device `backup`, profile, MHz) and warnings (device `warning`, the text in the profile
+  column, other cells empty). Python `csv` quoting, `
+`.
+- TXT: title, `Generated <ts> by OpenCoord <v>`, `Scan: <label>|not used`, a `WARNINGS` block (`  ! ...`) **at the
+  top** (else the "Complete: ..." line), search stats, an aligned table (numbers right-aligned, `-` = unknown),
+  then Unassigned, Backups (MHz), Locked carriers (MHz).
+- HTML: `<!DOCTYPE html>`, inline `<style>` only (no external resources, no script), all text escaped; red
+  `class="warnings"` box above the tables; tables for frequencies / unassigned / backups / locked; the spectrum as
+  `<img src="data:image/png;base64,...">` (plot area captured with `FileUI.capture_plot`, encoded by `io/png.py`;
+  omitted if no image); print CSS keeps rows and the warning box unbroken. Tests: `tests/io/test_export_plan.py`.
 
 ## Recording (`.ocrec`, `io/recording.py`, Task 17)
 Zip: `meta.json` + `chunk_000000.npz`, ... (chunks stored, already compressed). `meta.json`: `schema_version` 1 (newer -> `RecordingError` "update OpenCoord"), `opencoord_version`, `created`, `sweep_count`, `chunks` [{name, sweeps}], `device` {model_name, model_code (code of the *active* module), expansion_code (null), firmware, min_hz, max_hz, amp_top_dbm, amp_bottom_dbm} or null. Chunk (up to 256 sweeps): `t` float64 (`Sweep.timestamp`, wall clock), `start_hz`/`step_hz`/`points` int64, `irregular` uint8, concatenated `dbm` float32, `freqs_irregular` float64 (frequencies of the sweeps whose axis is not exactly `start + i*step`, e.g. a stitched scan; empty otherwise). Sweeps may differ in axis. Pure: `encode_chunk/decode_chunk/meta_to_json/meta_from_json`.

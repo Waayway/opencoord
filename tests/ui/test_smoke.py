@@ -309,10 +309,73 @@ def test_live_and_scan_against_the_simulator(tmp_path: Path) -> None:
         assert dpg.get_value("presets.value.carrier") == pytest.approx(600.0)
         assert dpg.get_item_configuration("presets.reset")["show"]
         assert dpg.get_value("presets.used_by") == "Not used by any profile"
+        # Coordination tab: device row, locked carrier, Coordinate on the worker thread, results
+        # table, plan lines and labels on the spectrum, check mode and the HTML export.
+        dpg.set_value("tabs", "tab.coordination")
+        ca = app.coordination
+        fire("coord.device.add")
+        assert app.frame()
+        fire("coord.device.0.profile", "Generic analog mic")
+        fire("coord.device.0.qty", 3)
+        dpg.set_value("coord.lock.paste", "830.5")
+        dpg.set_value("coord.lock.label", "Venue")
+        fire("coord.lock.add")
+        assert app.frame()
+        assert [(r.profile, r.quantity) for r in ca.model.rows] == [("Generic analog mic", 3)]
+        assert dpg.get_value("coord.lock.row.0.label") == "Venue"
+        assert dpg.get_value("coord.devices.total") == "3 devices"
+        fire("coord.run")
+        assert app.frame()
+        assert dpg.get_item_configuration("coord.cancel")["show"] or ca.result is not None
+        while ca.running:
+            assert time.monotonic() < deadline + 10, c.state.message
+            assert app.frame()
+        assert app.frame()
+        assert ca.result is not None and ca.result.plan.stats.complete, ca.message
+        assert dpg.get_value("coord.stats").startswith("Complete: all 3 devices")
+        assert len(dpg.get_item_children("coord.results", 1)) == 3
+        assert not dpg.get_item_configuration("coord.cancel")["show"]
+        plan_x = dpg.get_value("spectrum.plan")[0]
+        assert sorted(plan_x) == sorted(a.freq_hz / 1e6 for a in ca.result.plan.assignments)
+        assert dpg.get_item_configuration("spectrum.plan")["show"]
+        assert dpg.get_item_configuration("spectrum.plan.note.0")["label"] == (
+            "Generic analog mic #1"
+        )
+        assert not dpg.get_item_configuration("spectrum.plan.note.3")["show"]
+        fire("coord.show", False)
+        assert app.frame()
+        assert not dpg.get_item_configuration("spectrum.plan")["show"]
+        fire("coord.show", True)
+        fire("coord.edit")
+        for _ in range(2):
+            assert app.frame()
+        assert dpg.get_value("coord.check.row.0").count(";") == 2
+        fire("coord.check.run")
+        while ca.running:
+            assert time.monotonic() < deadline + 10, c.state.message
+            assert app.frame()
+        assert app.frame()
+        assert dpg.get_value("coord.check.summary") == "No violations among 3 devices"
+        dpg.set_value("coord.check.row.0", "825; 825.1")
+        fire("coord.check.row.0", "825; 825.1")
+        fire("coord.check.run")
+        while ca.running:
+            assert time.monotonic() < deadline + 10, c.state.message
+            assert app.frame()
+        assert app.frame()
+        assert dpg.get_value("coord.check.summary").startswith("1 violation")
+        assert len(dpg.get_item_children("coord.check.table", 1)) == 1
+        html = tmp_path / "plan.html"
+        app.file_ui.capture_plot(lambda rgba: ca.export("html", html, rgba))
+        while not html.exists():
+            assert time.monotonic() < deadline + 10, c.state.message
+            assert app.frame()
+        assert "data:image/png;base64," in html.read_text()
         # Sessions, export window, file dialog and the PNG plot capture.
         session = tmp_path / "smoke.opencoord"
         assert app.files.save(session)
         assert app.files.open(session)
+        assert ca.result is not None and len(ca.model.locks) == 1
         app.file_ui.export_dialog()
         assert app.frame()
         assert dpg.get_item_configuration("files.export")["show"]

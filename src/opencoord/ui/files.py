@@ -17,7 +17,7 @@ import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Final
+from typing import TYPE_CHECKING, Final
 
 import numpy as np
 import numpy.typing as npt
@@ -32,6 +32,9 @@ from opencoord.core.zones import MAX_EXCLUSION_ZONES
 from opencoord.device.scanner import Resolution
 from opencoord.io import export_scan, importers
 from opencoord.ui.controller import MAX_REFERENCES, Controller
+
+if TYPE_CHECKING:
+    from opencoord.ui.coordination_actions import CoordinationActions
 
 log = logging.getLogger(__name__)
 
@@ -77,6 +80,8 @@ class FileActions:
         #: The session file in use (``None`` until saved or opened).
         self.path: Path | None = None
         self._created: str | None = None
+        #: Coordination setup and plan saved in / restored from sessions (set by the app).
+        self.coordination: CoordinationActions | None = None
 
     # --- helpers -----------------------------------------------------------------------------
 
@@ -103,6 +108,9 @@ class FileActions:
         if st.model is not None:
             name = st.capabilities.main_name if st.capabilities else ""
             device = DeviceInfo(name, st.model.main_code, st.model.firmware)
+        setup, plan = (
+            self.coordination.session_parts() if self.coordination is not None else (None, None)
+        )
         return Session(
             settings=SessionSettings(
                 start_hz=st.start_hz,
@@ -117,6 +125,8 @@ class FileActions:
             traces={k: t for k, t in st.trace_map().items() if t is not None},
             markers=list(st.markers),
             exclusion_zones=list(st.exclusion_zones),
+            plan=plan,
+            coordination=setup,
             device=device,
             created=self._created or now,
             modified=now,
@@ -186,6 +196,8 @@ class FileActions:
         st.waterfall.clear()
         st.trace_version += 1
         st.ui_version += 1
+        if self.coordination is not None:
+            self.coordination.apply_session(session.coordination, session.plan)
 
     # --- exports and imports -----------------------------------------------------------------
 

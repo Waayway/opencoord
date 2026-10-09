@@ -241,3 +241,71 @@ def test_partial_channels_have_no_verdict() -> None:
     assert occupancy_text(full) == ("24", "-50.0", "-60.0", "12", "100")
     partial = ChannelOccupancy(24, -50.0, -60.0, 100.0, 0.25)
     assert occupancy_text(partial) == ("24", "-50.0", "-60.0", "partial", "25")
+
+
+# --- coordination panel and plan overlay ------------------------------------------------------
+
+
+def test_coordination_result_and_check_texts() -> None:
+    import types
+
+    from opencoord.coord.solver import (
+        REASON_TEXT,
+        Assignment,
+        CheckReport,
+        Plan,
+        SolveStats,
+        Unassigned,
+        Violation,
+    )
+    from opencoord.ui.coordination_actions import CheckOutcome
+    from opencoord.ui.panels.coordination import (
+        backups_text,
+        check_summary,
+        result_rows,
+        stats_text,
+        unassigned_text,
+        violation_cells,
+    )
+
+    plan = Plan(
+        (
+            Assignment("Mic #1", "Mic", 600_125_000, None, -98.24, 412_400),
+            Assignment("Mic #2", "Mic", 700_500_000, "B", None, None),
+        ),
+        (Unassigned("Mic #3", "Mic", "all-candidates-occupied"),),
+        types.MappingProxyType({"Mic": (601 * MHZ,), "IEM": ()}),
+        ("Mic #2 at 700.500 MHz is in a forbidden band: LTE",),
+        SolveStats(0.5, 12, False, False),
+    )
+    assert result_rows(plan) == [
+        ("Mic #1", "600.125", "-", "-98.2", "412", ""),
+        ("Mic #2", "700.500", "B", "-", "-", "!"),
+    ]
+    assert stats_text(plan) == (
+        "Partial plan: 2 of 3 devices have a frequency. Search: 12 nodes in 0.50 s"
+    )
+    assert unassigned_text(plan) == f"Mic #3: {REASON_TEXT['all-candidates-occupied']}"
+    assert backups_text(plan) == "Backups (MHz)\nMic: 601.000\nIEM: none found"
+    v = Violation("im3_2tx", 100_000, 25_000, ("A #1", "B #1"), "C #1", 600_050_000)
+    assert violation_cells(v) == (
+        "3rd order 2-Tx",
+        "100",
+        "25",
+        "A #1, B #1 -> C #1 (product 600.050)",
+    )
+    carrier = Violation("carrier", 350_000, 100_000, ("A #1", "A #2"), None, None)
+    assert violation_cells(carrier) == ("carrier spacing", "350", "100", "A #1, A #2")
+    a = (Assignment("A #1", "A", 1), Assignment("A #2", "A", 2))
+    assert check_summary(CheckOutcome(a, CheckReport((), ()))) == "No violations among 2 devices"
+    assert check_summary(CheckOutcome(a, CheckReport((carrier,), ()))) == (
+        "1 violation among 2 devices"
+    )
+
+
+def test_plan_labels_are_staggered_below_the_channel_numbers() -> None:
+    from opencoord.ui.plan_overlay import label_y
+
+    ys = [label_y(i, -120.0, -20.0) for i in range(5)]
+    assert all(-120 < y < -25 for y in ys)  # inside the view, below the channel badges
+    assert len(set(ys[:4])) == 4 and ys[4] == ys[0]

@@ -8,8 +8,7 @@
   - toolbar (`toolbar.*`): port combo + Connect/Disconnect, Live/Scan radio, preset combo, resolution combo,
     Start/Stop, Reset max hold
   - spectrum plot over the waterfall, in one `subplots(2, 1, link_all_x=True)` so the MHz axes line up
-  - right-hand tab bar (`tabs`, width 370): Device | Scan | Markers | Analysis | Record | Coordination | Profiles; Coordination
-    shows "Coming soon" until its task lands
+  - right-hand tab bar (`tabs`, width 370): Device | Scan | Markers | Analysis | Record | Coordination | Profiles
   - a status bar (`status.line`): connection, mode, range, step/RBW, sweeps/s, last message, fps
 - **Shared widget values:** the toolbar and the panels show the same port/preset/resolution via value-registry
   `source` items (`ui.port_choice`, `ui.preset`, `ui.resolution`). Radio buttons do **not** redraw when their
@@ -30,6 +29,7 @@
     (or scan / live) via the pure `readout()`
   - markers, threshold line and reference traces: see "Markers, threshold, references" below
   - channel overlay, exclusion zones: `overlay.py`, see "Channel overlay, analysis" below
+  - coordination plan lines and labels: `plan_overlay.py`, see "Coordination tab" below
 - **Waterfall** (`waterfall.py` `WaterfallView`): a `dynamic_texture` `DISPLAY_BINS` (1024) wide and `depth` rows
   high (settings `waterfall_depth`, default 300), shown with an `image_series` whose bounds are the history's
   MHz range. Rows come from `WaterfallHistory` (newest first, resampled with `resample_max`: max per column so
@@ -52,7 +52,7 @@
   M adds a marker at the cursor (at the peak of the main trace when the mouse is not over the plot), P moves the
   selected marker to the peak, N / Shift+N to the next peak right / left; ignored with Ctrl or Alt held
   (`Shortcut.shift` selects the Shift variant). Ctrl+S / Ctrl+Shift+S / Ctrl+O / Ctrl+E (`shortcuts.bind_files`, work in text fields too) = save / save as / open / export.
-- **Files** (Task 16): `ui/files.py` `FileActions(controller)` (no DPG; `path`, `title`, `build_session`, `save(path)`, `open(path)`, `apply_session`, `export(fmt_key, trace_key, path, rgba)`, `import_reference(path)`, `trace_choices()`; every failure becomes a status message and `False`) and `ui/file_dialogs.py` `FileUI` (File menu in the main window's menu bar: Open, Save, Save as, Export, Import scan as reference; modal export window with format + trace combos, then a DPG `file_dialog`; the window title shows the session file name). **Opening a session while connected never touches the device:** acquisition is stopped, saved range/mode/resolution become the selected settings, saved live/max/avg/min traces are shown until new sweeps replace them, references/markers/zones/threshold/overlay are replaced. `opencoord <file.opencoord>` opens at startup. **PNG export:** `dpg.output_frame_buffer(callback=)` 4 frames after the dialog closed (so it is not in the picture), float32 RGBA converted to uint8 and cropped to the plot area (`App.plot_rect()`: readout line + spectrum + waterfall; computed from the readout's position and the layout constants because child windows expose no `rect_min`). Unsaved-changes indicator: not implemented.
+- **Files** (Task 16): `ui/files.py` `FileActions(controller)` (no DPG; `path`, `title`, `build_session`, `save(path)`, `open(path)`, `apply_session`, `export(fmt_key, trace_key, path, rgba)`, `import_reference(path)`, `trace_choices()`; every failure becomes a status message and `False`) and `ui/file_dialogs.py` `FileUI` (File menu in the main window's menu bar: Open, Save, Save as, Export, Import scan as reference; modal export window with format + trace combos, then a DPG `file_dialog`; the window title shows the session file name). **Opening a session while connected never touches the device:** acquisition is stopped, saved range/mode/resolution become the selected settings, saved live/max/avg/min traces are shown until new sweeps replace them, references/markers/zones/threshold/overlay are replaced. `opencoord <file.opencoord>` opens at startup. **PNG export:** `FileUI.capture_plot(done)` (also used by the plan's HTML export) calls `dpg.output_frame_buffer(callback=)` 4 frames after the dialog closed (so it is not in the picture), float32 RGBA converted to uint8 and cropped to the plot area (`App.plot_rect()`: readout line + spectrum + waterfall; computed from the readout's position and the layout constants because child windows expose no `rect_min`). Unsaved-changes indicator: not implemented.
 - **Markers, threshold, references** (Task 14):
   - Pure math in `core/markers.py` (`Marker(id, freq_hz, trace_key)`, `level_at` nearest bin or `None` outside the
     trace, `peak`, `next_peak(trace, from, "left"|"right", min_prominence_db=3.0)` built on `find_peaks`,
@@ -161,6 +161,47 @@
     and otherwise refreshes texts when a version moved, so typing is never interrupted. `is_typing()` is passed to
     `shortcuts.bind(typing=...)` because those inputs are created later. Store root is `default_config_dir()`; the smoke
     run (`--smoke-frames`) uses a temporary folder. `App(..., profile_store=...)` is a required keyword.
+- **Coordination tab** (Task 22; `panels/coordination.py` `CoordinationPanel`, `ui/coordination_actions.py`
+  `CoordinationActions`, `ui/coordination_model.py`; the last two have no DPG):
+  - `coordination_model.py` (pure): `CoordinationModel` = `rows` (`DeviceRow(profile, quantity, check_text)`, max
+    `MAX_DEVICE_ROWS` = 32, quantity 0..200), `locks` (`LockRow(freq_hz, label, preset)`, max `MAX_LOCKS` = 64, sorted;
+    `paste_locks(text, label, preset)` reuses `profile_editor.parse_channel_text`, skips values already locked, numbers
+    a shared label, unlabelled = `Locked <MHz>`) and `options` (`Options`: use_scan, threshold_db 0..60, guard_khz
+    0..5000, allow_forbidden, prefer_single_group, time_budget_s 0.5..300, backups_per_profile 0..10, run override
+    enabled / scale 0.1..10 / per-field kHz; setters clamp). `revision` (every edit), `structure_version` (rows
+    added/removed, check boxes filled), `solve_key()` (setup minus check texts, for "plan is stale").
+    `build_request(model, profiles=, presets=, scan=, zones=, channel_plan=)` (rows of one profile are merged,
+    `ValueError` with a readable message: no devices, no/unknown profile, > 200 devices, unknown lock preset);
+    `check_input(...)` -> `(request, assignments)` from the rows' check texts (labels `<profile> #n` numbered per
+    profile over all rows). `fill_check(plan)` copies a plan into the check texts (split over rows of one
+    profile by quantity). `to_dict/from_dict` (setup) and `CoordinationResult(plan, locked, scan_label, created)` +
+    `result_to_dict/result_from_dict` (session JSON; bad data -> `ValueError`).
+  - `CoordinationActions(controller, profiles_actions, say, clock=, timestamp=, solver=, checker=)`: profiles = the
+    built-in templates overlaid by the user's loaded profiles (`profile_names()`: user's first); presets = the
+    loaded presets (built-ins if none). Scan = `controller.resolve_trace("max")` (max hold, scan, live) **copied**
+    (the max hold may change in place) unless "use scan" is off. `coordinate()` / `check()` start a daemon worker
+    thread (one job at a time); the result is posted to a queue drained by a `Controller.on_tick` hook (UI thread);
+    `cancel()` forgets the job id so its late result is dropped (the solver stops at its own time budget);
+    `progress_text()` = `Coordinating... (x.x s of up to N s)`. A solver exception becomes "Coordination failed: ...".
+    Also `stale`, `fill_check_from_result`, `clear_result`, `set_show_on_spectrum`, `spectrum_lines()`,
+    `document()` / `export(key, path, rgba)` (csv / txt / html via `io/export_plan.py`), `session_parts()` /
+    `apply_session(setup, plan)` (`FileActions.coordination` calls them; unreadable parts are ignored with a message).
+    `version` bumps on every shown change.
+  - Panel: device rows (profile combo + quantity + X; "Add device"), collapsing "Locked carriers" (paste box,
+    label, preset, Lock; rows with label + preset), collapsing "Options", Coordinate / Cancel + progress, stats line,
+    stale note, plan warnings (red), result table (Device, MHz 3 decimals, Group, dBm, nearest IMD kHz, `!` when a
+    plan warning names the device), unassigned devices with `describe_unassigned`, backups, "Show on spectrum",
+    "Edit as check", Clear, Export CSV / Text / Printable HTML (HTML = `FileUI.capture_plot` then export), and
+    collapsing "Check a hand-made plan" (a MHz box per device row, Check, summary, violation table rule / needs /
+    is / involved, warnings). Rows are rebuilt on `(model id, structure_version, profile names, preset names)`;
+    texts refresh on `(version, revision, running, has scan)`. `is_typing()` joins the profiles panel's in
+    `shortcuts.bind(typing=...)`.
+  - Spectrum (`plan_overlay.py` `PlanOverlayView`, owned by `SpectrumView(controller, plan)`): assigned
+    frequencies = one `inf_line_series` "Plan" (vermillion, weight 2), backups = "Backups" (same colour, dim); both in
+    the legend, so they read differently from the grey marker drag lines (DPG has no dashed lines). Labels
+    `Profile #n` = pool of `MAX_DEVICES` `plot_annotation`s placed in **plot units** at `label_y(i, y_lo, y_hi)`
+    (4 staggered rows below the channel numbers), repositioned when the axis limits change: a clamped annotation is
+    pinned back into the plot *after* its pixel offset, so offsets cannot stagger labels anchored off-plot.
 - **Simulator:** `opencoord --simulator` uses `SimulatedLink(sweep_points=512)` (like the WSUB1G+ at Normal/Fine) and
   connects on start; Live over 470-960 MHz is clamped to the 342.37 MHz max span at 512 points.
 - **Language:** English strings inline; no i18n. Labels use ASCII hyphens (default font).
@@ -169,7 +210,9 @@
   `python -m opencoord --smoke-frames 5` in a subprocess and, in-process, drives `App` frames against a
   512-point simulator: Live for 60 frames (asserts trace + waterfall + series data), then a Fast scan of
   470-500 MHz to completion, then a marker, reference, threshold, hidden trace and auto-scale (asserting the
-  drag lines, annotation and series), then the channel overlay, an exclusion zone and the analysis panel; it logs fps. Dear PyGui segfaults when a second viewport/context is created in the
+  drag lines, annotation and series), then the channel overlay, an exclusion zone and the analysis panel, the Record tab, the Profiles tab, the
+  Coordination tab (device row, locked carrier, Coordinate on the worker, results table, plan lines/labels, check
+  mode, HTML export with the captured plot) and session save/open; it logs fps. Dear PyGui segfaults when a second viewport/context is created in the
   same process, so only one test may open a window in-process.
 - **Performance (2026-10-09, 144 Hz Wayland desktop, vsync on):** Live at 512 points ~144 fps (vsync-bound),
   per-frame work ~0.2-0.4 ms; a 6261-point Normal 470-960 MHz scan trace re-pushed every frame still 144 fps.

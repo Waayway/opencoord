@@ -22,7 +22,7 @@ src/opencoord/
     traces.py        pure (done): TraceSet (live/max/avg/min; average = exact mean of last N, dB domain; axis change resets),
                      noise_floor (20th percentile), find_peaks (own O(n) prominence, strongest first), detected_carriers
     presets.py       pure (done): RangePreset(name, start_hz, stop_hz), PRESETS (plan §4), available(device_range), find()
-    session.py       (done) Session/SessionSettings/DeviceInfo, pure to_json/from_json + encode_traces/decode_traces, save/load of the .opencoord zip; SessionError
+    session.py       (done) Session/SessionSettings/DeviceInfo, pure to_json/from_json + encode_traces/decode_traces, save/load of the .opencoord zip; SessionError (schema 2: plan + coordination dicts)
     settings.py      AppSettings + load()/save() of settings.toml via platformdirs (done)
   coord/
     profiles.py      DeviceProfile, parse/validate/serialise, candidates(), templates (done); spacing.py SpacingRules + presets (done); io/profile_store.py file load/save (done)
@@ -30,18 +30,21 @@ src/opencoord/
     solver.py        pure: solve(request) → Plan
     channel_plans/   __init__ (available/load via importlib.resources), model.py (parse_plan, dataclasses), eu.toml (done)
   io/
-    png.py (done: encode_png RGBA8), atomic.py (done: write_atomic), export_scan.py (done), importers.py (done), export_plan.py (planned)
+    png.py (done: encode_png RGBA8), atomic.py (done: write_atomic), export_scan.py (done), importers.py (done), export_plan.py (done: plan CSV/TXT/HTML)
   ui/
     state.py         AppState (what views render, version counters), WaterfallHistory, resample_max (no DPG)
     controller.py    Controller: owns link/TraceSet/scanner/settings; intents + tick(); no DPG (done)
     files.py         FileActions (done): session build/apply, save/open, exports, reference import; no DPG
-    file_dialogs.py  FileUI (done): File menu, DPG file dialogs, export window, PNG frame capture
-    app.py, spectrum.py, overlay.py, waterfall.py, theme.py, shortcuts.py, panels/{device,scan,markers,analysis}.py (done; see ui.md)
+    file_dialogs.py  FileUI (done): File menu, DPG file dialogs, export window, PNG frame capture (capture_plot)
+    coordination_model.py  pure Coordination tab state: setup, build_request/check_input, setup + result JSON (done)
+    coordination_actions.py  CoordinationActions (done): solve/check on a worker thread, cancel, exports, session parts; no DPG
+    plan_overlay.py  PlanOverlayView (done): plan + backup lines and labels on the spectrum
+    app.py, spectrum.py, overlay.py, waterfall.py, theme.py, shortcuts.py, panels/{device,scan,markers,analysis,record,coordination,profiles}.py (done; see ui.md)
 ```
 Implemented so far: `__init__.py` (`__version__`), `__main__.py`, `cli.py`,
 `ui/{app,state,controller,spectrum,overlay,waterfall,theme,shortcuts}.py`,
 `ui/panels/{device,scan,markers,analysis}.py`,
-`core/{types,traces,markers,occupancy,analysis,zones,offsets,presets,settings,session,logger}.py`, `io/{png,atomic,export_scan,importers,recording}.py`, `ui/{files,file_dialogs,recording}.py`, `ui/panels/record.py`, `device/replay.py`, `coord/channel_plans/`,
+`core/{types,traces,markers,occupancy,analysis,zones,offsets,presets,settings,session,logger}.py`, `io/{png,atomic,export_scan,export_plan,importers,recording}.py`, `ui/{files,file_dialogs,recording,coordination_model,coordination_actions,plan_overlay}.py`, `ui/panels/{record,coordination}.py`, `device/replay.py`, `coord/channel_plans/`,
 `device/{protocol,models,link_api,simulator,link,scanner}.py`; the rest of the tree
 is still to be written. `io/` is deliberately named like the stdlib module; all imports are absolute so it is safe.
 
@@ -52,7 +55,8 @@ The project uses the `src/` layout so tests always run against the installed pac
 SerialLink thread ──Sweep──▶ queue ──▶ UI frame loop ──▶ TraceSet.update() ──▶ plot series / waterfall texture
                                              │
                      SegmentedScanner ◀──────┘ (owns segment schedule, emits stitched Trace + progress)
-UI "Coordinate" ──▶ worker thread: solver.solve(CoordinationRequest) ──▶ queue ──▶ results panel
+UI "Coordinate" ──▶ worker thread: solver.solve(CoordinationRequest) ──▶ queue ──▶ Controller.on_tick hook
+                    (CoordinationActions, UI thread) ──▶ results panel + plan lines on the spectrum
 ```
 
 ## UI controller (`ui/controller.py`)
@@ -92,10 +96,13 @@ UI "Coordinate" ──▶ worker thread: solver.solve(CoordinationRequest) ─�
   `WATERFALL_DEPTH_MIN`/`MAX` = 10/1000 shared with the controller and scan panel), `mode` (`live`/`scan`), `threshold_dbm` (optional float, omitted when hidden), `amp_offsets` (`[amp_offsets]` table, device key `model_<code>` -> dB within +/-50; invalid entries dropped, omitted when empty).
   `load()` ignores unknown keys and replaces invalid values by defaults (logged); an unreadable file (OS error,
   bad TOML, invalid UTF-8) gives defaults. `save()` writes atomically (tmp + replace). The app loads on start and saves on exit.
-- Sessions are user-chosen files: `.opencoord` = zip with `session.json` (`schema_version` 1) + `traces.npz`
+- Sessions are user-chosen files: `.opencoord` = zip with `session.json` (`schema_version` 2; version 1 files still open) + `traces.npz`
   (`<name>.freqs_hz` float64, `<name>.dbm` float32 per trace name: live/max/avg/min/scan/ref1..ref4). JSON holds
   `opencoord_version`, `created`/`modified` (UTC ISO), `device` (model_name, model_code, firmware or null),
   `settings` (start/stop Hz, mode, preset, resolution, threshold_dbm, overlay_enabled, channel_plan), trace labels,
-  `markers`, `exclusion_zones`, `plan` (null, reserved for Task 22). A newer `schema_version` raises
+  `markers`, `exclusion_zones`, `plan` (the solved plan, `coordination_model.result_to_dict`, or null) and
+  `coordination` (the Coordination tab setup: device rows incl. check texts, locked carriers, options; or null).
+  Both are opaque dicts in `core/session.py` (must be objects); the UI decodes them and ignores unreadable parts
+  with a message. A newer `schema_version` raises
   `SessionError` ("update OpenCoord"); missing optional fields use defaults; bad zip/JSON/arrays raise
   `SessionError` with a user-facing message (corrupt deflate, unsupported compression, missing members, > 256 MB uncompressed). Saves are atomic and fsynced (`io/atomic.py`). Applied content is validated by `FileActions` (<= 8 markers, <= 16 valid zones, unique ids, markers on unknown traces dropped). See `io-formats.md`.

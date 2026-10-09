@@ -19,6 +19,7 @@ from opencoord.core.types import Trace
 from opencoord.ui import theme
 from opencoord.ui.controller import MAX_REFERENCES, Controller, MarkerRow
 from opencoord.ui.overlay import OverlayView
+from opencoord.ui.plan_overlay import PlanOverlayView
 from opencoord.ui.state import AppState
 
 #: (series key, legend label); tags are ``spectrum.trace.<key>``.
@@ -89,8 +90,10 @@ def _line_value(sender: object) -> float:
 
 
 class SpectrumView:
-    def __init__(self, controller: Controller) -> None:
+    def __init__(self, controller: Controller, plan: PlanOverlayView | None = None) -> None:
         self._c = controller
+        #: The coordination plan's lines and labels (``None`` = not shown).
+        self.plan = plan
         self._trace_version = -1
         self._ui_version = -1
         self._y_version = 0
@@ -115,7 +118,11 @@ class SpectrumView:
                 for key, label in SERIES:
                     dpg.add_line_series([], [], label=label, tag=series_tag(key))
                     dpg.bind_item_theme(series_tag(key), theme.series_theme(key))
+                if self.plan is not None:
+                    self.plan.build_series()
             self.overlay.build_layers()
+            if self.plan is not None:
+                self.plan.build_notes()
             for slot in range(MAX_MARKERS):
                 dpg.add_drag_line(
                     tag=marker_line_tag(slot),
@@ -192,6 +199,8 @@ class SpectrumView:
                     )
                 dpg.configure_item(series_tag(key), show=key not in state.hidden_traces)
         self.overlay.update(state)
+        if self.plan is not None:
+            self.plan.update()
         if changed or state.ui_version != self._ui_version:
             self._trace_version, self._ui_version = state.trace_version, state.ui_version
             self._update_markers(state)

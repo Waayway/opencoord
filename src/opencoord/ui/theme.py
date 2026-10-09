@@ -25,6 +25,11 @@ THRESHOLD_COLOR: RGBA = (255, 110, 90, 220)
 ERROR_COLOR: RGBA = (255, 110, 90, 255)
 OK_COLOR: RGBA = (0, 190, 140, 255)
 MUTED_COLOR: RGBA = (150, 150, 160, 255)
+WARN_COLOR: RGBA = (255, 190, 80, 255)
+#: Coordination plan on the spectrum (Okabe-Ito vermillion; no trace uses it).
+PLAN_COLOR: RGBA = (213, 94, 0, 235)
+PLAN_BACKUP_COLOR: RGBA = (213, 94, 0, 110)
+PLAN_NOTE_COLOR: RGBA = (110, 48, 0, 230)
 
 _BG: RGBA = (22, 24, 28, 255)
 _PANEL: RGBA = (30, 33, 38, 255)
@@ -76,8 +81,12 @@ __all__ = [
     "MARKER_SELECTED_COLOR",
     "MUTED_COLOR",
     "OK_COLOR",
+    "PLAN_BACKUP_COLOR",
+    "PLAN_COLOR",
+    "PLAN_NOTE_COLOR",
     "THRESHOLD_COLOR",
     "TRACE_COLORS",
+    "WARN_COLOR",
     "apply",
     "series_theme",
 ]

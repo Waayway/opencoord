@@ -58,7 +58,8 @@ class FileUI:
         self.files = files
         self._plot_rect = plot_rect
         self._dialogs = 0
-        self._capture: tuple[int, Path] | None = None
+        #: Pending plot capture: frames still to wait and who gets the picture.
+        self._capture: tuple[int, Callable[[npt.NDArray[np.uint8] | None], None]] | None = None
         self._title = ""
 
     # --- layout ------------------------------------------------------------------------------
@@ -142,9 +143,20 @@ class FileUI:
 
     def _export_to(self, fmt_key: str, trace_key: str, path: Path) -> bool:
         if export_format(fmt_key).key == "png":
-            self._capture = (CAPTURE_DELAY_FRAMES, path)
+            self.capture_plot(lambda rgba: self._save_png(path, rgba))
             return True
         return self.files.export(fmt_key, trace_key, path)
+
+    def _save_png(self, path: Path, rgba: npt.NDArray[np.uint8] | None) -> None:
+        if rgba is None:
+            self.files.say("Cannot read the screen image; the PNG export failed")
+        else:
+            self.files.export("png", "", path, rgba)
+
+    def capture_plot(self, done: Callable[[npt.NDArray[np.uint8] | None], None]) -> None:
+        """Grab the plot area a few frames from now (after dialogs closed) and pass the RGBA
+        pixels to ``done`` on the UI thread (``None`` when the frame could not be read)."""
+        self._capture = (CAPTURE_DELAY_FRAMES, done)
 
     # --- dialogs -----------------------------------------------------------------------------
 
@@ -190,19 +202,20 @@ class FileUI:
             dpg.set_viewport_title(title)
         if self._capture is None:
             return
-        frames, path = self._capture
+        frames, done = self._capture
         if frames > 0:
-            self._capture = (frames - 1, path)
+            self._capture = (frames - 1, done)
             return
         self._capture = None
-        dpg.output_frame_buffer(callback=lambda _s, buf: self._save_png(path, buf))
+        dpg.output_frame_buffer(callback=lambda _s, buf: self._captured(done, buf))
 
-    def _save_png(self, path: Path, buffer: Any) -> None:
+    def _captured(self, done: Callable[[npt.NDArray[np.uint8] | None], None], buffer: Any) -> None:
         try:
             frame = frame_to_rgba(buffer, dpg.get_viewport_client_width())
-            rgba = crop_to_rect(frame, *self._plot_rect())
+            rgba: npt.NDArray[np.uint8] | None = np.ascontiguousarray(
+                crop_to_rect(frame, *self._plot_rect())
+            )
         except (ValueError, KeyError, SystemError):
             log.warning("could not read the frame buffer", exc_info=True)
-            self.files.say("Cannot read the screen image; the PNG export failed")
-            return
-        self.files.export("png", "", path, np.ascontiguousarray(rgba))
+            rgba = None
+        done(rgba)

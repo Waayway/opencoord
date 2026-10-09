@@ -28,19 +28,22 @@ from opencoord.device.simulator import SimulatedLink
 from opencoord.io.profile_store import ProfileStore
 from opencoord.ui import shortcuts, theme
 from opencoord.ui.controller import Controller, LinkFactory
+from opencoord.ui.coordination_actions import CoordinationActions
 from opencoord.ui.file_dialogs import FileUI
 from opencoord.ui.files import FileActions
 from opencoord.ui.panels import device as device_panel
 from opencoord.ui.panels import scan as scan_panel
 from opencoord.ui.panels.analysis import AnalysisPanel
+from opencoord.ui.panels.coordination import CoordinationPanel
 from opencoord.ui.panels.device import DevicePanel
 from opencoord.ui.panels.markers import MarkersPanel
 from opencoord.ui.panels.profiles import ProfilesPanel
 from opencoord.ui.panels.record import RecordPanel
 from opencoord.ui.panels.scan import ScanPanel
+from opencoord.ui.plan_overlay import PlanOverlayView
 from opencoord.ui.profiles_actions import ProfilesActions
 from opencoord.ui.recording import RecordingActions
-from opencoord.ui.spectrum import TAG_READOUT, SpectrumView
+from opencoord.ui.spectrum import TAG_READOUT, TAG_X, TAG_Y, SpectrumView
 from opencoord.ui.state import AppState
 from opencoord.ui.waterfall import WaterfallView
 
@@ -52,7 +55,6 @@ PANEL_WIDTH = 370
 STATUS_HEIGHT = 30
 #: Horizontal gap between the plot area and the right-hand panel (window padding + spacing).
 PLOT_MARGIN = 8
-COMING_SOON = "Coming soon"
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -155,7 +157,12 @@ class App:
         self.record_panel = RecordPanel(controller, self.recording, self.file_ui.ask)
         self.profiles = ProfilesActions(profile_store, self.files.say)
         self.profiles_panel = ProfilesPanel(self.profiles, self.file_ui.ask)
-        self.spectrum = SpectrumView(controller)
+        self.coordination = CoordinationActions(controller, self.profiles, self.files.say)
+        self.files.coordination = self.coordination
+        self.coordination_panel = CoordinationPanel(
+            self.coordination, self.file_ui.ask, self.file_ui.capture_plot
+        )
+        self.spectrum = SpectrumView(controller, PlanOverlayView(self.coordination, TAG_X, TAG_Y))
         self.waterfall = WaterfallView()
         self._status_version = -1
         self._frames = 0
@@ -209,7 +216,7 @@ class App:
                     with dpg.tab(label="Record", tag="tab.record"):
                         self.record_panel.build()
                     with dpg.tab(label="Coordination", tag="tab.coordination"):
-                        dpg.add_text(COMING_SOON, color=theme.MUTED_COLOR)
+                        self.coordination_panel.build()
                     with dpg.tab(label="Profiles", tag="tab.profiles"):
                         self.profiles_panel.build()
             dpg.add_text("", tag="status.line")
@@ -228,8 +235,9 @@ class App:
                 *self.analysis_panel.text_inputs,
                 *self.record_panel.text_inputs,
                 *self.profiles_panel.text_inputs,
+                *self.coordination_panel.text_inputs,
             ],
-            typing=self.profiles_panel.is_typing,
+            typing=lambda: self.profiles_panel.is_typing() or self.coordination_panel.is_typing(),
         )
         shortcuts.bind_files(
             {
@@ -315,6 +323,7 @@ class App:
         self.analysis_panel.update(state)
         self.record_panel.update(state)
         self.profiles_panel.update()
+        self.coordination_panel.update()
         self.spectrum.update(state)
         self.waterfall.update(state)
         self.file_ui.update()
