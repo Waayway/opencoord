@@ -211,6 +211,9 @@ class Parser:
 
     def __init__(self) -> None:
         self._buf = bytearray()
+        # Point count from the last #C2-F. The device always sends #C2-F before sweeps of a new
+        # size (F2), so a sweep header with any other count is garbage.
+        self._sweep_points: int | None = None
 
     def feed(self, data: bytes) -> list[Event]:
         self._buf += data
@@ -221,6 +224,9 @@ class Parser:
                 break
             new_events, consumed = step
             events.extend(new_events)
+            for event in new_events:
+                if isinstance(event, ConfigReply):
+                    self._sweep_points = event.config.sweep_points
             del self._buf[:consumed]
         for event in events:
             if isinstance(event, ParseError):
@@ -264,23 +270,35 @@ class Parser:
             header, count = 4, int.from_bytes(buf[2:4], "big")
         else:
             return self._garbage(buf, f"unsupported frame ${kind.decode('latin-1')}")
+        if count == 0:
+            return self._garbage(buf, "sweep frame with zero points")
+        if self._sweep_points is not None and count != self._sweep_points:
+            return self._garbage(
+                buf, f"sweep frame of {count} points, config says {self._sweep_points}"
+            )
         total = header + count + len(_CRLF)
         if len(buf) < total:
-            eeot = buf.find(EEOT, header)
-            if eeot >= 0:
-                return self._aborted(buf, eeot)
-            return None
+            return self._aborted(buf, header, len(buf))
         if buf[total - 2 : total] != _CRLF:
-            eeot = buf.find(EEOT, header, total)
-            if eeot >= 0:
-                return self._aborted(buf, eeot)
-            return self._garbage(buf, "sweep frame not terminated by CR LF")
+            return self._aborted(buf, header, total) or self._garbage(
+                buf, "sweep frame not terminated by CR LF"
+            )
         return [SweepData(_samples(buf[header : header + count]))], total
 
     @staticmethod
-    def _aborted(buf: bytes, eeot: int) -> _Step:
-        end = eeot + len(EEOT)
-        return [ParseError("sweep aborted by device (EEOT)", buf[:end])], end
+    def _aborted(buf: bytes, header: int, end: int) -> _Step:
+        """Drop a pending sweep that the device cut short with EEOT; None if it was not.
+
+        EEOT only counts if it comes before the next ``#``/``$``: if the header was spurious, a
+        real frame may follow it, and that must not be swallowed. (A real payload containing
+        0x23/0x24 then waits for its full length and is resynced instead; nothing is lost.)
+        """
+        limit = min([end] + [i for i in (buf.find(b"#", header), buf.find(b"$", header)) if i >= 0])
+        eeot = buf.find(EEOT, header, limit)
+        if eeot < 0:
+            return None
+        stop = eeot + len(EEOT)
+        return [ParseError("sweep aborted by device (EEOT)", buf[:stop])], stop
 
     def _other(self, buf: bytes) -> _Step:
         # Plain text lines (e.g. the "RF Explorer 03.39 ..." banner sent in reply to C0).
@@ -288,6 +306,8 @@ class Parser:
         while n < len(buf) and n < _MAX_LINE and 0x20 <= buf[n] < 0x7F:
             n += 1
         if buf[n : n + 2] == _CRLF:
+            if n == 0:
+                return [], 2  # empty line
             return [Unknown(buf[:n].decode("ascii"))], n + 2
         if n < _MAX_LINE and buf[n:] in (b"", b"\r"):
             return None

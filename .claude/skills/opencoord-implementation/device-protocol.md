@@ -58,11 +58,16 @@ each with a `.json` sidecar):
 - `Parser().feed(data: bytes) -> list[Event]`, incremental and stateful; any chunking gives the same frames
   (Hypothesis test over F1–F3).
 - A sweep frame is accepted only if `\r\n` sits exactly after the declared count, so payload bytes equal to `#`,
-  `$` or `\r\n` are fine. If EEOT appears inside a pending frame it is dropped as `ParseError("…EEOT…")`.
+  `$` or `\r\n` are fine. Zero-count headers are garbage; empty lines are skipped.
+- After the first `#C2-F` the parser remembers `sweep_points`; a sweep header with any other count is garbage
+  straight away (the device always sends `#C2-F` before sweeps of a new size, F2).
+- EEOT inside a pending sweep drops that sweep as `ParseError("…EEOT…")`, but only if the EEOT comes before the
+  next `#`/`$` after the header, so a spurious header can never swallow real frames that follow it.
 - On garbage (non-text bytes, binary in a `#` line, unknown `$X`, missing terminator, > 512-byte line) it emits
   one `ParseError(reason, data)` and resyncs at the next `#` or `$`. It never raises.
-- Known limit: a spurious `$z` in garbage with a huge count stalls output until that many bytes arrive (≤ 65541
-  bytes, ~1.3 s at 500 kbaud), then everything after it is re-parsed; nothing valid is lost.
+- Known limit: **before the first `#C2-F`**, a spurious `$s`/`$z` header in garbage stalls output until its
+  declared length has arrived (≤ 65541 bytes, ~1.3 s at 500 kbaud); then everything after it is re-parsed and
+  nothing valid is lost. With a config known, the stall is at most one real sweep length.
 - `make_sweep(config, samples, timestamp) -> Sweep` builds the `float64` Hz axis, adds the device `amp_offset_db`
   (as RFExplorer-for-Python does ⚠ only seen as 0), and raises `ValueError` if the length != `config.sweep_points`.
 

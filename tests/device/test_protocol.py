@@ -252,6 +252,49 @@ def test_standalone_eeot_is_reported() -> None:
     assert isinstance(events[1], ModelReply)
 
 
+def _reviewer_reproducer() -> bytes:
+    """Spurious $z header (4096 points) followed by real frames, then an aborted sweep."""
+    full = _sweep_frame(bytes([0xA0]) * 112)
+    partial = b"$S\x70" + bytes([0xA0]) * 50
+    return b"\xdc\xdc$z\x10\x00" + C2_F_112 + full + partial + EEOT
+
+
+def test_spurious_header_before_config_does_not_swallow_frames() -> None:
+    parser = Parser()
+    events = parser.feed(_reviewer_reproducer())
+    # No config yet, so the bogus 4096-point header is pending; the EEOT after the real frames
+    # must not be taken as aborting it.
+    assert _without_errors(events) == []
+    events += parser.feed(b"\xa0" * 4200 + C2_M)
+    kinds = [type(e) for e in _without_errors(events)]
+    assert kinds == [ConfigReply, SweepData, ModelReply]
+    assert any(isinstance(e, ParseError) and "EEOT" in e.reason for e in events)
+
+
+def test_spurious_header_after_config_is_rejected_immediately() -> None:
+    events = Parser().feed(C2_F_112 + _reviewer_reproducer())
+    kinds = [type(e) for e in _without_errors(events)]
+    assert kinds == [ConfigReply, ConfigReply, SweepData]
+    aborted = [e for e in events if isinstance(e, ParseError) and "EEOT" in e.reason]
+    assert len(aborted) == 1
+    assert aborted[0].data.startswith(b"$S\x70")
+
+
+def test_sweep_with_wrong_point_count_for_config_is_garbage() -> None:
+    events = Parser().feed(C2_F_112 + _sweep_frame(bytes(100)) + C2_M)
+    assert [type(e) for e in events] == [ConfigReply, ParseError, ModelReply]
+
+
+def test_zero_point_sweep_is_garbage() -> None:
+    events = Parser().feed(b"$S\x00\r\n" + C2_M)
+    assert isinstance(events[0], ParseError)
+    assert _without_errors(events) == [ModelReply(ModelInfo(10, None, "03.39"))]
+
+
+def test_empty_lines_are_skipped() -> None:
+    assert Parser().feed(b"\r\n\r\n" + C2_M) == [ModelReply(ModelInfo(10, None, "03.39"))]
+
+
 def test_garbage_resyncs_to_next_marker() -> None:
     data = b"\x8c\x87\x90\x00\x01" + C2_M + b"\x9e\xa5\xff" + C2_F_112
     events = _feed_all(data)
