@@ -26,6 +26,8 @@ from opencoord.device.link_api import Link
 from opencoord.device.simulator import SimulatedLink
 from opencoord.ui import shortcuts, theme
 from opencoord.ui.controller import Controller, LinkFactory
+from opencoord.ui.file_dialogs import FileUI
+from opencoord.ui.files import FileActions
 from opencoord.ui.panels import device as device_panel
 from opencoord.ui.panels import scan as scan_panel
 from opencoord.ui.panels.analysis import AnalysisPanel
@@ -42,6 +44,8 @@ log = logging.getLogger(__name__)
 SIMULATOR_POINTS = 512
 PANEL_WIDTH = 370
 STATUS_HEIGHT = 30
+#: Horizontal gap between the plot area and the right-hand panel (window padding + spacing).
+PLOT_MARGIN = 8
 COMING_SOON = "Coming soon"
 
 
@@ -52,7 +56,7 @@ def build_parser() -> argparse.ArgumentParser:
         nargs="?",
         type=Path,
         default=None,
-        help="session file (.opencoord) to open (not implemented yet)",
+        help="session file (.opencoord) to open at startup",
     )
     parser.add_argument("--version", action="version", version=f"opencoord {__version__}")
     parser.add_argument(
@@ -122,8 +126,13 @@ class FrameStats:
 
 
 class App:
-    def __init__(self, controller: Controller, settings: AppSettings) -> None:
+    def __init__(
+        self, controller: Controller, settings: AppSettings, session: Path | None = None
+    ) -> None:
         self.controller = controller
+        self.files = FileActions(controller)
+        self.file_ui = FileUI(self.files, self.plot_rect)
+        self._session_arg = session
         self._settings = settings
         self.device_panel = DevicePanel(controller)
         self.scan_panel = ScanPanel(controller)
@@ -149,7 +158,9 @@ class App:
             dpg.add_string_value(tag=device_panel.PORT_CHOICE)
             dpg.add_string_value(tag=scan_panel.PRESET_VALUE)
             dpg.add_string_value(tag=scan_panel.RESOLUTION_VALUE)
-        with dpg.window(tag="main", label=title):
+        with dpg.window(tag="main", label=title, menubar=True):
+            with dpg.menu_bar():
+                self.file_ui.build_menu()
             self._build_toolbar()
             dpg.add_separator()
             with dpg.group(horizontal=True):
@@ -180,6 +191,7 @@ class App:
                         with dpg.tab(label=name, tag=f"tab.{name.lower()}"):
                             dpg.add_text(COMING_SOON, color=theme.MUTED_COLOR)
             dpg.add_text("", tag="status.line")
+        self.file_ui.build_windows()
         dpg.set_primary_window("main", True)
         s = self._settings
         dpg.create_viewport(title=title, width=s.window_width, height=s.window_height)
@@ -194,7 +206,17 @@ class App:
                 *self.analysis_panel.text_inputs,
             ],
         )
+        shortcuts.bind_files(
+            {
+                "save": self.file_ui.save,
+                "save_as": self.file_ui.save_as,
+                "open": self.file_ui.open_session,
+                "export": self.file_ui.export_dialog,
+            }
+        )
         self.controller.startup()
+        if self._session_arg is not None and not self.files.open(self._session_arg):
+            log.warning("could not open %s: %s", self._session_arg, self.controller.state.message)
         self._started = time.perf_counter()
 
     def _build_toolbar(self) -> None:
@@ -232,6 +254,13 @@ class App:
                 label="Reset max hold", tag="toolbar.reset", callback=lambda: c.reset_max_hold()
             )
 
+    def plot_rect(self) -> tuple[float, float, float, float]:
+        """``(x, y, width, height)`` of the plot area (readout line, spectrum, waterfall)."""
+        x, y = dpg.get_item_rect_min(TAG_READOUT)
+        width = dpg.get_viewport_client_width() - x - PANEL_WIDTH - 2 * PLOT_MARGIN
+        height = dpg.get_viewport_client_height() - y - STATUS_HEIGHT
+        return x, y, width, height
+
     def frame(self) -> bool:
         """Tick, update the views and render one frame; ``False`` once the window was closed."""
         if not dpg.is_dearpygui_running():
@@ -245,6 +274,7 @@ class App:
         self.analysis_panel.update(state)
         self.spectrum.update(state)
         self.waterfall.update(state)
+        self.file_ui.update()
         if state.ui_version != self._status_version or self._frames % 30 == 0:
             self._status_version = state.ui_version
             fps = dpg.get_frame_rate()
@@ -324,7 +354,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         port_lister=(lambda: []) if args.simulator else find_ports,
         simulator=args.simulator,
     )
-    app = App(controller, settings)
+    app = App(controller, settings, args.session)
     app.run(max_frames=args.smoke_frames)
     if not smoke:
         try:

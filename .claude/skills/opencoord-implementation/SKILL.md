@@ -36,6 +36,7 @@ shows the spectrum (live, max-hold, waterfall, markers, TV channel overlay), exp
 | `architecture.md` | package layout, data flow, threading, sessions, settings paths |
 | `device-protocol.md` | RF Explorer serial protocol, model table, link/reconnect, segmented scanning, simulator |
 | `coordination.md` | device profiles (TOML), spacing presets, IMD math, solver algorithm, channel plans |
+| `io-formats.md` | sessions (`.opencoord`), CSV/PNG exporters, importers, WWB / WSM / RF Explorer format research with confidence levels |
 | `ui.md` | Dear PyGui structure, plots, waterfall texture, shortcuts, theme |
 | `tooling-and-packaging.md` | uv, ruff/mypy/pytest, Nix flake, Docker stages, PyInstaller + per-OS packaging, GitHub Actions |
 | `conventions.md` | code style, naming, testing patterns, fixtures, commits, how to update this skill |

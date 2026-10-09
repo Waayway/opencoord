@@ -22,7 +22,7 @@ src/opencoord/
     traces.py        pure (done): TraceSet (live/max/avg/min; average = exact mean of last N, dB domain; axis change resets),
                      noise_floor (20th percentile), find_peaks (own O(n) prominence, strongest first), detected_carriers
     presets.py       pure (done): RangePreset(name, start_hz, stop_hz), PRESETS (plan §4), available(device_range), find()
-    session.py       Session load/save (.opencoord zip: session.json + traces.npz)
+    session.py       (done) Session/SessionSettings/DeviceInfo, pure to_json/from_json + encode_traces/decode_traces, save/load of the .opencoord zip; SessionError
     settings.py      AppSettings + load()/save() of settings.toml via platformdirs (done)
   coord/
     profiles.py      DeviceProfile, SpacingRules, TOML load/save, templates
@@ -30,16 +30,18 @@ src/opencoord/
     solver.py        pure: solve(request) → Plan
     channel_plans/   __init__ (available/load via importlib.resources), model.py (parse_plan, dataclasses), eu.toml (done)
   io/
-    export_scan.py, export_plan.py, importers.py
+    png.py (done: encode_png RGBA8), atomic.py (done: write_atomic), export_scan.py (done), importers.py (done), export_plan.py (planned)
   ui/
     state.py         AppState (what views render, version counters), WaterfallHistory, resample_max (no DPG)
     controller.py    Controller: owns link/TraceSet/scanner/settings; intents + tick(); no DPG (done)
+    files.py         FileActions (done): session build/apply, save/open, exports, reference import; no DPG
+    file_dialogs.py  FileUI (done): File menu, DPG file dialogs, export window, PNG frame capture
     app.py, spectrum.py, overlay.py, waterfall.py, theme.py, shortcuts.py, panels/{device,scan,markers,analysis}.py (done; see ui.md)
 ```
 Implemented so far: `__init__.py` (`__version__`), `__main__.py`, `cli.py`,
 `ui/{app,state,controller,spectrum,overlay,waterfall,theme,shortcuts}.py`,
 `ui/panels/{device,scan,markers,analysis}.py`,
-`core/{types,traces,markers,occupancy,analysis,zones,offsets,presets,settings}.py`, `coord/channel_plans/`,
+`core/{types,traces,markers,occupancy,analysis,zones,offsets,presets,settings,session}.py`, `io/{png,atomic,export_scan,importers}.py`, `ui/{files,file_dialogs}.py`, `coord/channel_plans/`,
 `device/{protocol,models,link_api,simulator,link,scanner}.py`; the rest of the tree
 is still to be written. `io/` is deliberately named like the stdlib module; all imports are absolute so it is safe.
 
@@ -89,4 +91,10 @@ UI "Coordinate" ──▶ worker thread: solver.solve(profiles, trace, exclusion
   `WATERFALL_DEPTH_MIN`/`MAX` = 10/1000 shared with the controller and scan panel), `mode` (`live`/`scan`), `threshold_dbm` (optional float, omitted when hidden), `amp_offsets` (`[amp_offsets]` table, device key `model_<code>` -> dB within +/-50; invalid entries dropped, omitted when empty).
   `load()` ignores unknown keys and replaces invalid values by defaults (logged); an unreadable file (OS error,
   bad TOML, invalid UTF-8) gives defaults. `save()` writes atomically (tmp + replace). The app loads on start and saves on exit.
-- Sessions are user-chosen files: `.opencoord` = zip with `session.json` (schema-versioned) + `traces.npz`.
+- Sessions are user-chosen files: `.opencoord` = zip with `session.json` (`schema_version` 1) + `traces.npz`
+  (`<name>.freqs_hz` float64, `<name>.dbm` float32 per trace name: live/max/avg/min/scan/ref1..ref4). JSON holds
+  `opencoord_version`, `created`/`modified` (UTC ISO), `device` (model_name, model_code, firmware or null),
+  `settings` (start/stop Hz, mode, preset, resolution, threshold_dbm, overlay_enabled, channel_plan), trace labels,
+  `markers`, `exclusion_zones`, `plan` (null, reserved for Task 22). A newer `schema_version` raises
+  `SessionError` ("update OpenCoord"); missing optional fields use defaults; bad zip/JSON/arrays raise
+  `SessionError` with a user-facing message. Saves are atomic (`io/atomic.py`). See `io-formats.md`.

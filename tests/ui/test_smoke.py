@@ -9,6 +9,7 @@ import os
 import subprocess
 import sys
 import time
+from pathlib import Path
 
 import pytest
 
@@ -36,7 +37,26 @@ def test_smoke_frames() -> None:
     assert "rendered 5 frames" in result.stderr
 
 
-def test_live_and_scan_against_the_simulator() -> None:
+def test_opens_session_argument(tmp_path: Path) -> None:
+    from opencoord.core import session as session_io
+
+    good = tmp_path / "ok.opencoord"
+    session_io.save(good, session_io.Session())
+    bad = tmp_path / "bad.opencoord"
+    bad.write_bytes(b"nope")
+    for path, warned in ((good, False), (bad, True)):
+        result = subprocess.run(
+            [sys.executable, "-m", "opencoord", "--smoke-frames", "3", str(path)],
+            capture_output=True,
+            text=True,
+            timeout=60,
+            check=False,
+        )
+        assert result.returncode == 0, result.stderr
+        assert ("could not open" in result.stderr) == warned
+
+
+def test_live_and_scan_against_the_simulator(tmp_path: Path) -> None:
     import dearpygui.dearpygui as dpg
 
     from opencoord.core.settings import AppSettings
@@ -128,6 +148,28 @@ def test_live_and_scan_against_the_simulator() -> None:
         assert dpg.get_item_configuration("overlay.zone.0")["show"]  # zones stay drawn
         for tab in ("markers", "analysis", "coordination", "profiles"):
             assert dpg.does_item_exist(f"tab.{tab}")
+        # Sessions, export window, file dialog and the PNG plot capture.
+        session = tmp_path / "smoke.opencoord"
+        assert app.files.save(session)
+        assert app.files.open(session)
+        app.file_ui.export_dialog()
+        assert app.frame()
+        assert dpg.get_item_configuration("files.export")["show"]
+        dpg.configure_item("files.export", show=False)
+        app.file_ui.open_session()
+        for _ in range(3):
+            assert app.frame()
+        assert dpg.does_item_exist("files.dialog.1")
+        assert dpg.get_viewport_title().startswith("smoke.opencoord")
+        dpg.delete_item("files.dialog.1")
+        shot = tmp_path / "plot.png"
+        assert app.file_ui._export_to("png", "max", shot)
+        deadline = time.monotonic() + 5
+        while not shot.exists():
+            assert time.monotonic() < deadline, c.state.message
+            assert app.frame()
+        data = shot.read_bytes()
+        assert data.startswith(b"\x89PNG") and "Exported" in c.state.message
         stats = app.stats()
         log.info(
             "smoke: live %.0f fps; overall %d frames, %.0f fps, work %.2f ms mean / %.2f ms max",

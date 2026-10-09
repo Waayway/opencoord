@@ -1,4 +1,5 @@
-"""Keyboard shortcuts: Space start/stop, R reset max hold, M / P / N / Shift+N markers.
+"""Keyboard shortcuts: Space start/stop, R reset max hold, M / P / N / Shift+N markers, and
+Ctrl+S / Ctrl+Shift+S / Ctrl+O / Ctrl+E for sessions and exports (``bind_files``).
 
 Shortcuts are ignored while a text or number field has keyboard focus, so typing a frequency
 never starts a scan.
@@ -6,7 +7,7 @@ never starts a scan.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 
 import dearpygui.dearpygui as dpg
@@ -65,6 +66,29 @@ def bind(controller: Controller, text_inputs: Sequence[str]) -> None:
     with dpg.handler_registry(tag="shortcuts.handlers"):
         for s in SHORTCUTS:
             dpg.add_key_press_handler(_KEYS[s.key], callback=make(s))
+
+
+def bind_files(actions: Mapping[str, Callable[[], object]]) -> None:
+    """Ctrl+S (``save``), Ctrl+Shift+S (``save_as``), Ctrl+O (``open``), Ctrl+E (``export``).
+
+    Unlike the plain-key shortcuts these also work while a text field is being edited.
+    """
+    keys = {"S": dpg.mvKey_S, "O": dpg.mvKey_O, "E": dpg.mvKey_E}
+
+    def make(letter: str) -> Callable[..., None]:
+        def handler(*_: object) -> None:
+            if not dpg.is_key_down(dpg.mvKey_ModCtrl) or dpg.is_key_down(dpg.mvKey_ModAlt):
+                return
+            shift = dpg.is_key_down(dpg.mvKey_ModShift)
+            name = {"S": "save_as" if shift else "save", "O": "open", "E": "export"}[letter]
+            if not shift or letter == "S":
+                actions[name]()
+
+        return handler
+
+    with dpg.handler_registry(tag="shortcuts.files"):
+        for letter, key in keys.items():
+            dpg.add_key_press_handler(key, callback=make(letter))
 
 
 def help_text() -> str:
