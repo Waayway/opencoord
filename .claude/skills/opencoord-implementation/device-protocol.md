@@ -89,7 +89,14 @@ each with a `.json` sidecar):
 - Emits progress and partial traces so the UI fills in left to right.
 
 ## Simulator (`simulator.py`)
-- Same public interface as `SerialLink`.
+- Implemented in `src/opencoord/device/simulator.py`; the shared interface is the `Link` Protocol in
+  `device/link_api.py` (`open/close/set_span/hold/switch_module`, `model/config/capabilities/is_open`,
+  `sweeps`/`events` queues carrying `Sweep`/`LinkEvent`).
+- `SimulatedLink(seed, sweep_points=112, sweep_interval_s=0.1, queue_size=64)`: WSUB1G+ (code 10, fw 03.39), daemon
+  thread, queues drop the oldest item when full. `set_span` clamps to capabilities, builds a new `DeviceConfig`
+  (step = round(span/(points-1))) and resumes after `hold()`. `switch_module(False)` emits an `error` event (no expansion).
+- `generate(start_hz, stop_hz, points, t, seed) -> float32 dBm` is pure/deterministic: DVB-T ch 22/27/35 (-60 dBm,
+  8 MHz), FM carriers in 563-831 MHz, intermittent carrier at `INTERMITTENT_HZ` (on while t % 4 < 2).
 - Synthetic spectrum: noise floor around −105 dBm ± jitter, DVB-T 8 MHz blocks, narrowband FM carriers, an optional
   intermittent carrier.
 - Deterministic with a seed (for tests). Selected with `opencoord --simulator`.

@@ -10,7 +10,8 @@ src/opencoord/
     models.py        pure: model code → Capabilities (name, min/max Hz, max span, sweep-point limits, plus/expansion)
     link.py          SerialLink thread: discover, open, baud detect, request config, stream, reconnect
     scanner.py       SegmentedScanner: drives a link (or simulator) across segments, stitches traces
-    simulator.py     SimulatedLink: same interface as SerialLink, synthetic spectra
+    link_api.py      Link Protocol + LinkEvent(kind, message) (done)
+    simulator.py     SimulatedLink + pure generate(): same interface as SerialLink, synthetic spectra (done)
   core/
     types.py         Sweep, DeviceConfig, ModelInfo (done); Trace, Marker, Band, … (planned)
     traces.py        pure: TraceSet (live/max/avg/min), noise floor, peak detection
