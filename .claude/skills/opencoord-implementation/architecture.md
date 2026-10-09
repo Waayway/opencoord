@@ -6,13 +6,13 @@ src/opencoord/
   __main__.py        python -m opencoord → ui.app.main()
   cli.py             opencoord-cli: info | sweep | scan (debug / headless)
   device/
-    protocol.py      pure: command builders + incremental byte parser → events (Sweep, ConfigReply, ModelReply, Unknown)
+    protocol.py      pure: command builders + incremental byte parser → events (SweepData, ConfigReply, ModelReply, Unknown, ParseError); make_sweep()
     models.py        pure: model code → Capabilities (name, min/max Hz, max span, sweep-point limits, plus/expansion)
     link.py          SerialLink thread: discover, open, baud detect, request config, stream, reconnect
     scanner.py       SegmentedScanner: drives a link (or simulator) across segments, stitches traces
     simulator.py     SimulatedLink: same interface as SerialLink, synthetic spectra
   core/
-    types.py         Sweep, Trace, Marker, Band, … (frozen dataclasses / numpy arrays)
+    types.py         Sweep, DeviceConfig, ModelInfo (done); Trace, Marker, Band, … (planned)
     traces.py        pure: TraceSet (live/max/avg/min), noise floor, peak detection
     session.py       Session load/save (.opencoord zip: session.json + traces.npz)
     settings.py      AppSettings via platformdirs (config dir: profiles/, presets.toml, settings.toml)

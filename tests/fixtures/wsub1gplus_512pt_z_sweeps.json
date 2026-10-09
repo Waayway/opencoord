@@ -1,0 +1,22 @@
+{
+  "device": "RF Explorer WSUB1G PLUS SLIM",
+  "usb": "CP2102N 10c4:ea60",
+  "port": "/dev/ttyUSB0",
+  "baud": 500000,
+  "recorded": "2026-10-09",
+  "model_code": 10,
+  "expansion_code": 255,
+  "firmware": "03.39",
+  "host_sent": ["#\\x05CJ\\x1f (set 512 sweep points)", "#\\x04C0"],
+  "duration_s": 6.0,
+  "settings": {
+    "start_khz": 431000,
+    "step_hz": 19569,
+    "sweep_points": 512,
+    "amp_top_dbm": -10,
+    "amp_bottom_dbm": -120,
+    "rbw_khz": 32,
+    "calculator_mode": 4
+  },
+  "notes": "Starts with a stray byte and EEOT. The reply to CJ is #C2-F, then a $z header (count 0x0200) immediately aborted by EEOT, then the C0 reply and two complete $z sweeps of 512 samples; the last sweep is cut off by the end of the capture. The device was restored to 112 points afterwards."
+}

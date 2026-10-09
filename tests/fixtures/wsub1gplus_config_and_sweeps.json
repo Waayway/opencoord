@@ -1,0 +1,23 @@
+{
+  "device": "RF Explorer WSUB1G PLUS SLIM",
+  "usb": "CP2102N 10c4:ea60",
+  "port": "/dev/ttyUSB0",
+  "baud": 500000,
+  "recorded": "2026-10-09",
+  "model_code": 10,
+  "expansion_code": 255,
+  "firmware": "03.39",
+  "serial_number": "B36J37L7CB7KKKL3",
+  "host_sent": ["#\\x04C0"],
+  "duration_s": 3.0,
+  "settings": {
+    "start_khz": 431000,
+    "step_hz": 90090,
+    "sweep_points": 112,
+    "amp_top_dbm": -10,
+    "amp_bottom_dbm": -120,
+    "rbw_khz": 110,
+    "calculator_mode": 4
+  },
+  "notes": "Starts with an EEOT marker (ff fe ff fe 00) left over from a sweep aborted when the previous session closed the port, then the C0 reply (banner line, #Sn, #CAL, #BAT, #C2-M, #QA, #LFLO2, #C2-F, #a0) and $S sweeps; the last sweep is cut off by the end of the capture."
+}

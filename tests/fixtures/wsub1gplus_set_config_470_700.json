@@ -1,0 +1,22 @@
+{
+  "device": "RF Explorer WSUB1G PLUS SLIM",
+  "usb": "CP2102N 10c4:ea60",
+  "port": "/dev/ttyUSB0",
+  "baud": 500000,
+  "recorded": "2026-10-09",
+  "model_code": 10,
+  "expansion_code": 255,
+  "firmware": "03.39",
+  "host_sent": ["#\\x20C2-F:0470000,0700000,-020,-110", "#\\x04C0"],
+  "duration_s": 4.0,
+  "settings": {
+    "start_khz": 470000,
+    "step_hz": 2072072,
+    "sweep_points": 112,
+    "amp_top_dbm": -20,
+    "amp_bottom_dbm": -110,
+    "rbw_khz": 578,
+    "calculator_mode": 4
+  },
+  "notes": "Proves the C2-F set-config command format: the device echoes the new config (#C2-F), then answers C0 with #C2-M + #C2-F, then $S sweeps. The device was restored to 431-441 MHz afterwards."
+}
