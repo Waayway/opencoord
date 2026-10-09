@@ -128,6 +128,13 @@
                 makeWrapper ${venv}/bin/$bin $out/bin/$bin ${linuxWrapperArgs}
               done
               install -Dm644 ${./packaging/linux/opencoord.desktop} $out/share/applications/opencoord.desktop
+              # Icon=opencoord in the .desktop file resolves through the hicolor theme.
+              for size in 16 32 48 64 128 256 512; do
+                install -Dm644 ${./packaging/icons}/opencoord-$size.png \
+                  $out/share/icons/hicolor/''${size}x''${size}/apps/opencoord.png
+              done
+              install -Dm644 ${./packaging/icons/opencoord.svg} \
+                $out/share/icons/hicolor/scalable/apps/opencoord.svg
               install -Dm644 ${./packaging/linux/99-opencoord-rfexplorer.rules} \
                 $out/lib/udev/rules.d/99-opencoord-rfexplorer.rules
               runHook postInstall

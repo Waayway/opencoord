@@ -41,8 +41,9 @@
     fallback is what makes `nix run` work on non-NixOS hosts (glvnd otherwise finds no GLX vendor:
     `GLX: No GLXFBConfigs returned` → assertion crash). Cost: mesa adds ~1 GiB to the closure (total ~1.3 GiB).
     Installs `packaging/linux/opencoord.desktop` → `$out/share/applications/` and
-    `packaging/linux/99-opencoord-rfexplorer.rules` → `$out/lib/udev/rules.d/` (all systems). The flake does not install the icon yet
-    (`packaging/icons/opencoord-*.png` exist; hicolor install is a TODO).
+    `packaging/linux/99-opencoord-rfexplorer.rules` → `$out/lib/udev/rules.d/` (all systems), and the icons
+    `packaging/icons/opencoord-<N>.png` → `$out/share/icons/hicolor/<N>x<N>/apps/opencoord.png` (N = 16…512) plus
+    `opencoord.svg` → `hicolor/scalable/apps/`, so the `.desktop` file's `Icon=opencoord` resolves.
   - `apps.default`: `nix run` launches the GUI.
   - `devShells.default`: `uv`, `python313`, `ruff`, `nixfmt`; `UV_PYTHON_DOWNLOADS=never`,
     `UV_PYTHON=${python.interpreter}`; on Linux `LD_LIBRARY_PATH` = runtime libs + `libstdc++` (uv's unpatched
@@ -125,7 +126,8 @@ The flag must match the host OS. Artifacts land directly in `dist/`:
   the app and an `/Applications` symlink, `hdiutil create -format UDZO -fs HFS+`. Not notarised (Gatekeeper asks on
   first launch).
 - `opencoord <session>`: `ui/app.py` accepts an optional positional `session` path (`Path`) so file-association
-  launches parse; opening it is not implemented yet.
+  launches work; `App.startup()` opens it with `FileActions.open` (a failure is logged and shown in the status line,
+  the app still starts).
 - **Icons** `packaging/icons/`: source `opencoord.svg` (spectrum with three peaks). `uv run packaging/icons/generate.py`
   (PEP 723 inline deps `pillow`, `resvg-py`; not project deps) writes `opencoord-{16..512}.png`, `opencoord.png`
   (256), `opencoord.ico` (16–256), `opencoord.icns` (from 1024). Outputs are committed; rerun after editing the SVG.
