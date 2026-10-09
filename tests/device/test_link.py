@@ -297,6 +297,44 @@ def test_open_maps_permission_error_to_group_help() -> None:
     assert "uucp" in drain(link.events)[0].message
 
 
+def test_open_tries_the_next_port_when_one_cannot_be_opened(links: list[SerialLink]) -> None:
+    busy = OSError(errno.EBUSY, "Device or resource busy")
+    second = Port("/dev/ttyUSB1", 0x10C4, 0xEA60)
+    factory = Factory(busy, busy, FakeSerial(device()))
+    link = make_link(factory, port_lister=lambda: [RFE_PORT, second])
+    links.append(link)
+    link.open()
+    assert [c[0] for c in factory.calls] == ["/dev/ttyUSB0", "/dev/ttyUSB0", "/dev/ttyUSB1"]
+    assert "/dev/ttyUSB1" in drain(link.events)[0].message
+
+
+def test_open_reports_the_first_open_error_when_nothing_answers() -> None:
+    busy = OSError(errno.EBUSY, "Device or resource busy")
+    factory = Factory(busy, FakeSerial())
+    link = make_link(factory)
+    with pytest.raises(ConnectionError, match="in use"):
+        link.open(timeout_s=0.2)
+    assert [b for _, b in factory.calls] == [500_000, 2_400]
+
+
+def test_open_maps_non_os_errors_from_the_factory() -> None:
+    link = make_link(Factory(ValueError("Not a valid baudrate: 7")))
+    with pytest.raises(ConnectionError, match="Not a valid baudrate"):
+        link.open()
+    assert drain(link.events)[0].kind == "error"
+
+
+def test_no_reply_lists_tried_ports_and_bauds() -> None:
+    second = Port("/dev/ttyUSB1", 0x10C4, 0xEA60)
+    link = make_link(
+        Factory(FakeSerial()), port_lister=lambda: [RFE_PORT, second], baud_rates=(500_000,)
+    )
+    with pytest.raises(ConnectionError) as exc:
+        link.open(timeout_s=0.2)
+    assert "/dev/ttyUSB0, /dev/ttyUSB1" in str(exc.value)
+    assert "tried 500000 baud" in str(exc.value)
+
+
 def test_open_maps_serial_exception_by_errno() -> None:
     serial = pytest.importorskip("serial")
     busy = serial.SerialException(errno.EAGAIN, "Could not exclusively lock port /dev/ttyUSB0")
@@ -359,7 +397,7 @@ def test_commands_wait_for_the_device_echo(links: list[SerialLink]) -> None:
     def slow(cmd: bytes) -> bytes:
         reply = base(cmd)
         if cmd != C0:
-            threading.Thread(target=lambda: (gate.wait(3), fake.inject(reply))).start()
+            threading.Thread(target=lambda: (gate.wait(3), fake.inject(reply)), daemon=True).start()
             return b""
         return reply
 
@@ -393,6 +431,48 @@ def test_command_never_confirmed_reports_error_and_moves_on(links: list[SerialLi
     assert len(fake.written) == 4  # C0, set_config x2 (ignored), next set_config
     kinds = [e.kind for e in drain(link.events)]
     assert kinds == ["connected", "error"]
+
+
+def test_long_hold_then_set_span_does_not_reconnect(links: list[SerialLink]) -> None:
+    # Regression: silence while held must not count against the stall timeout after resuming.
+    base = device()
+
+    def delayed(cmd: bytes) -> bytes:
+        reply = base(cmd)
+        if cmd != C0 and reply:
+            timer = threading.Timer(0.15, lambda: fake.inject(reply))  # ~hardware echo latency
+            timer.daemon = True
+            timer.start()
+            return b""
+        return reply
+
+    fake = FakeSerial(delayed)
+    factory = Factory(fake)
+    link = make_link(factory, stall_timeout_s=0.3)
+    links.append(link)
+    link.open()
+    link.hold()
+    time.sleep(0.6)  # hold longer than the stall timeout
+    link.set_span(470 * MHZ, 700 * MHZ)
+    wait_for(lambda: link.config is not None and link.config.start_hz == 470 * MHZ)
+    wait_for(lambda: any_sweep_at(link, 470 * MHZ))
+    assert [e.kind for e in drain(link.events)] == ["connected"]
+    assert len(factory.calls) == 1
+
+
+def test_unconfirmed_set_config_is_resent_after_reconnect(links: list[SerialLink]) -> None:
+    first = FakeSerial(device(ignore_set_config=1))
+    second = FakeSerial(device())
+    link = make_link(Factory(first, second), command_timeout_s=5.0)
+    links.append(link)
+    link.open()
+    link.set_span(470 * MHZ, 700 * MHZ)
+    request = protocol.set_config(470 * MHZ, 700 * MHZ, -10, -120)
+    wait_for(lambda: request in first.written)
+    first.fail = OSError(errno.EIO, "unplugged")
+    wait_for(lambda: link.config is not None and link.config.start_hz == 470 * MHZ)
+    assert second.written == [C0, request]
+    assert [e.kind for e in drain(link.events)] == ["connected", "disconnected", "connected"]
 
 
 def test_hold_then_set_span_resumes(links: list[SerialLink]) -> None:
@@ -549,4 +629,5 @@ def test_not_found_help_on_linux_and_with_port() -> None:
 
 def test_no_reply_and_other_messages() -> None:
     assert "No reply" in user_message("no_reply", "/dev/ttyUSB0", "linux")
+    assert "tried 2400 baud" in user_message("no_reply", "COM3", "win32", bauds=(2400,))
     assert "boom" in user_message("other", "/dev/ttyUSB0", "linux", detail="boom")

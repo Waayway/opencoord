@@ -60,8 +60,10 @@ def test_real_device_streams_and_retunes() -> None:
             assert float(sweep.dbm.max()) < 0 and float(sweep.dbm.min()) > -140
         print(f"retuned {link.config}\nfirst sweep {retuned[0].start_hz}..{retuned[0].stop_hz} Hz")
     finally:
-        # Leave the device as we found it (span rounded to whole kHz, amplitudes kept by set_span).
-        if original is not None and link.is_open:
-            link.set_span(original.start_hz, round(original.stop_hz / 1000) * 1000)
-            _wait_config(link, original.start_hz)
-        link.close()
+        try:
+            # Leave the device as we found it (span rounded to whole kHz, amplitudes kept).
+            if original is not None and link.is_open:
+                link.set_span(original.start_hz, round(original.stop_hz / 1000) * 1000)
+                _wait_config(link, original.start_hz)
+        finally:
+            link.close()

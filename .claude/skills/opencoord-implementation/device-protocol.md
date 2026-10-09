@@ -112,13 +112,17 @@ each with a `.json` sidecar):
   Auto-connect (no `port`) only probes `10c4:ea60` ports, so unrelated serial devices never get `C0` written to them.
 - `open(timeout_s=5.0)`: the 5 s budget is shared over all port × baud attempts. Per attempt: open the port
   (`exclusive=True` so a busy port fails on POSIX), write `C0`, read until `#C2-M` then `#C2-F`; resend `C0` once at
-  half the budget (busy device). Events after the config are handed to the worker. Opening takes ~150 ms on hardware.
+  half the budget (busy device). A port that fails to open (any exception) does not stop the search;
+  if nothing answers, the first open error is reported, else `no_reply` naming all ports and bauds tried.
+  Events after the config are handed to the worker. Opening takes ~150 ms on hardware.
 - Worker thread owns the port after `open()`: writes queued commands one at a time; `set_config` waits for any
   `#C2-F` (timeout `command_timeout_s`, one resend, then an `error` event and the next command); `hold`/`switch_module`
   do not wait. Sweeps become `Sweep` via `make_sweep` only if their count matches the current config.
 - Reconnect: a read/write `OSError` (pyserial's `SerialException` is one) or no data for `stall_timeout_s` while not
   held → close, `disconnected` event, retry `_connect` with `backoff_delays(0.5, 5.0)` (0.5, 1, 2, 4, 5, 5 …),
-  re-discovering the port when none was given, then `connected`. Queued commands survive a reconnect.
+  re-discovering the port when none was given, then `connected`. Queued commands survive a reconnect, and an
+  unconfirmed `set_config` in flight is re-sent first. The stall clock restarts on every write, so a long hold
+  followed by `set_span` does not look like silence.
 - `set_span` clamps like the simulator (min span `max(points-1, 1000)` Hz because `C2-F` is in whole kHz) and keeps
   the device's current amplitude top/bottom.
 - Hardware test `tests/device/test_link_hardware.py` (`OPENCOORD_HARDWARE=1`, optional `OPENCOORD_PORT`): model +

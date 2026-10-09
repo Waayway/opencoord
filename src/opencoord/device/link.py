@@ -141,8 +141,18 @@ def classify_error(exc: BaseException, platform: str) -> ErrorKind:
     return "other"
 
 
-def user_message(kind: ErrorKind, port: str | None, platform: str, detail: str = "") -> str:
-    """The message shown to the user for ``kind``, with help for ``platform`` (``sys.platform``)."""
+def user_message(
+    kind: ErrorKind,
+    port: str | None,
+    platform: str,
+    detail: str = "",
+    bauds: Sequence[int] = BAUD_RATES,
+) -> str:
+    """The message shown to the user for ``kind``, with help for ``platform`` (``sys.platform``).
+
+    ``port`` may name several ports (``"/dev/ttyUSB0, /dev/ttyUSB1"``); ``bauds`` are the rates
+    tried, for ``no_reply``.
+    """
     where = port or "the serial port"
     if kind == "permission":
         if platform.startswith("linux"):
@@ -172,9 +182,9 @@ def user_message(kind: ErrorKind, port: str | None, platform: str, detail: str =
             "cp210x converter attached to ttyUSB."
         )
     if kind == "no_reply":
-        bauds = " and ".join(str(b) for b in BAUD_RATES)
+        tried = " and ".join(str(b) for b in bauds)
         return (
-            f"No reply from an RF Explorer on {where} (tried {bauds} baud). Switch it on, leave "
+            f"No reply from an RF Explorer on {where} (tried {tried} baud). Switch it on, leave "
             "any menu on its screen and try again."
         )
     return f"Could not use {where}: {detail}" if detail else f"Could not use {where}."
@@ -193,8 +203,13 @@ def backoff_delays(initial_s: float, max_s: float) -> Iterator[float]:
 
 @dataclass(frozen=True)
 class _Command:
+    kind: Literal["set_config", "hold", "switch_module"]
     data: bytes
-    confirmed_by_config: bool  # the device answers with #C2-F
+
+    @property
+    def confirmed_by_config(self) -> bool:
+        """The device answers with ``#C2-F``, so the next command waits for it."""
+        return self.kind == "set_config"
 
 
 @dataclass
@@ -247,6 +262,8 @@ class SerialLink:
         self._config: DeviceConfig | None = None
         self._capabilities: Capabilities | None = None
         self._connect_timeout = 5.0
+        # Command written but not yet confirmed; survives a reconnect (worker thread only).
+        self._in_flight: _Command | None = None
 
     # --- Link properties ---
 
@@ -275,6 +292,7 @@ class SerialLink:
         self._connect_timeout = timeout_s
         while not self._commands.empty():
             self._commands.get_nowait()
+        self._in_flight = None
         try:
             conn = self._connect(timeout_s)
         except ConnectionError as exc:
@@ -294,6 +312,7 @@ class SerialLink:
         self._stop.set()
         thread.join(timeout=3.0)
         if thread.is_alive():  # still running: stay "open" rather than lie
+            log.warning("serial link thread did not stop within 3 s; link stays open")
             return
         self._thread = None
         put_drop_oldest(self.events, LinkEvent("disconnected", "RF Explorer closed"))
@@ -316,11 +335,11 @@ class SerialLink:
         data = protocol.set_config(
             start, stop, round(config.amp_top_dbm), round(config.amp_bottom_dbm)
         )
-        self._commands.put(_Command(data, confirmed_by_config=True))
+        self._commands.put(_Command("set_config", data))
 
     def hold(self) -> None:
         if self.is_open:
-            self._commands.put(_Command(protocol.hold(), confirmed_by_config=False))
+            self._commands.put(_Command("hold", protocol.hold()))
 
     def switch_module(self, main: bool) -> None:
         model = self._model
@@ -329,7 +348,7 @@ class SerialLink:
             return
         if self.is_open:
             # ⚠ The reply to CM is not verified; a new #C2-F is applied whenever it arrives.
-            self._commands.put(_Command(protocol.switch_module(main), confirmed_by_config=False))
+            self._commands.put(_Command("switch_module", protocol.switch_module(main)))
 
     # --- connecting ---
 
@@ -343,23 +362,32 @@ class SerialLink:
                 raise ConnectionError(user_message("not_found", None, self._platform))
         deadline = time.monotonic() + timeout_s
         attempts = [(port, baud) for port in ports for baud in self._bauds]
+        first_error: tuple[Exception, str] | None = None  # reported if nothing answers
         for i, (port, baud) in enumerate(attempts):
+            if self._stop.is_set():
+                break
             budget = (deadline - time.monotonic()) / (len(attempts) - i)
             try:
                 ser = self._factory(port, baud)
-            except OSError as exc:
-                raise ConnectionError(self._error_message(exc, port)) from exc
+            except Exception as exc:  # pyserial raises ValueError too, e.g. for a bad baud rate
+                log.debug("cannot open %s at %d baud: %s", port, baud, exc)
+                first_error = first_error or (exc, port)
+                continue
             try:
                 conn = self._handshake(ser, port, baud, budget)
             except OSError as exc:
-                _close_quietly(ser)
-                raise ConnectionError(self._error_message(exc, port)) from exc
+                log.debug("error talking to %s at %d baud: %s", port, baud, exc)
+                first_error = first_error or (exc, port)
+                conn = None
             if conn is not None:
                 return conn
             _close_quietly(ser)
-            if self._stop.is_set():
-                break
-        raise ConnectionError(user_message("no_reply", ports[-1], self._platform))
+        if first_error is not None:
+            error, port = first_error
+            raise ConnectionError(self._error_message(error, port)) from error
+        raise ConnectionError(
+            user_message("no_reply", ", ".join(ports), self._platform, bauds=self._bauds)
+        )
 
     def _handshake(
         self, ser: SerialLike, port: str, baud: int, budget_s: float
@@ -443,48 +471,58 @@ class SerialLink:
         return None  # pragma: no cover (backoff_delays never ends)
 
     def _pump(self, conn: _Connection) -> None:
-        """Stream until ``close()``; raises ``OSError``/``_LinkLost`` when the device is lost."""
+        """Stream until ``close()``; raises ``OSError``/``_LinkLost`` when the device is lost.
+
+        A command still unconfirmed when the previous connection was lost is re-sent first.
+        """
         ser = conn.serial
-        holding = False
-        in_flight: _Command | None = None
+        holding = False  # the handshake's C0 restarted the sweep dump
         sent_at = 0.0
         retried = False
-        last_data = time.monotonic()
+        last_data = time.monotonic()  # also reset on every write: silence is timed from there
         for event in conn.backlog:
             self._handle(event)
         conn.backlog.clear()
+        if self._in_flight is not None:
+            log.debug("re-sending %s after reconnect", self._in_flight.kind)
+            ser.write(self._in_flight.data)
+            sent_at = last_data = time.monotonic()
         while not self._stop.is_set():
             now = time.monotonic()
+            in_flight = self._in_flight
             if in_flight is None:
                 try:
                     cmd = self._commands.get_nowait()
                 except queue.Empty:
                     pass
                 else:
+                    if cmd.confirmed_by_config:
+                        self._in_flight, sent_at, retried = cmd, now, False
                     ser.write(cmd.data)
-                    if cmd.data == protocol.hold():
+                    last_data = now
+                    if cmd.kind == "hold":
                         holding = True
-                    elif cmd.confirmed_by_config:
+                    elif cmd.kind == "set_config":
                         holding = False  # a new config resumes the sweep dump (seen on hardware)
-                        in_flight, sent_at, retried = cmd, now, False
             elif now - sent_at > self._command_timeout:
                 if not retried:
-                    log.debug("no #C2-F after %r, resending", in_flight.data)
+                    log.debug("no #C2-F after %s, resending", in_flight.kind)
                     ser.write(in_flight.data)
-                    sent_at, retried = now, True
+                    sent_at = last_data = now
+                    retried = True
                 else:
                     put_drop_oldest(
                         self.events,
                         LinkEvent("error", "RF Explorer did not confirm the new settings"),
                     )
-                    in_flight = None
+                    self._in_flight = None
 
             data = ser.read(max(ser.in_waiting, 1))
             if data:
                 last_data = time.monotonic()
                 for event in conn.parser.feed(data):
                     if self._handle(event):
-                        in_flight = None
+                        self._in_flight = None
             elif not holding and time.monotonic() - last_data > self._stall_timeout:
                 raise _LinkLost(f"no data for {self._stall_timeout:.0f} s")
 
