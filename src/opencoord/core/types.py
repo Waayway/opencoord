@@ -67,3 +67,32 @@ class ModelInfo:
     main_code: int
     expansion_code: int | None
     firmware: str
+
+
+@dataclass(frozen=True, eq=False)
+class Trace:
+    """A labelled spectrum trace (live, max-hold, stitched scan, imported, ...).
+
+    Same layout as :class:`Sweep` without the timestamp. ``eq=False`` because numpy arrays have no
+    single truth value.
+    """
+
+    freqs_hz: npt.NDArray[np.float64]
+    dbm: npt.NDArray[np.float32]
+    label: str
+
+    @property
+    def start_hz(self) -> int:
+        return round(float(self.freqs_hz[0]))
+
+    @property
+    def stop_hz(self) -> int:
+        return round(float(self.freqs_hz[-1]))
+
+
+@dataclass(frozen=True)
+class Carrier:
+    """A detected carrier: frequency in Hz and its level in dBm."""
+
+    freq_hz: int
+    level_dbm: float

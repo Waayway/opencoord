@@ -13,8 +13,9 @@ src/opencoord/
     link_api.py      Link Protocol + LinkEvent(kind, message) (done)
     simulator.py     SimulatedLink + pure generate(): same interface as SerialLink, synthetic spectra (done)
   core/
-    types.py         Sweep, DeviceConfig, ModelInfo (done); Trace, Marker, Band, … (planned)
-    traces.py        pure: TraceSet (live/max/avg/min), noise floor, peak detection
+    types.py         Sweep, DeviceConfig, ModelInfo, Trace, Carrier (done); Marker, Band, … (planned)
+    traces.py        pure (done): TraceSet (live/max/avg/min; average = exact mean of last N, dB domain; axis change resets),
+                     noise_floor (20th percentile), find_peaks (own O(n) prominence, strongest first), detected_carriers
     session.py       Session load/save (.opencoord zip: session.json + traces.npz)
     settings.py      AppSettings via platformdirs (config dir: profiles/, presets.toml, settings.toml)
   coord/
@@ -27,7 +28,7 @@ src/opencoord/
   ui/
     app.py, spectrum.py, waterfall.py, theme.py, shortcuts.py, panels/*.py
 ```
-Implemented so far: `__init__.py` (`__version__`), `__main__.py`, `cli.py`, `ui/app.py`, `core/types.py`,
+Implemented so far: `__init__.py` (`__version__`), `__main__.py`, `cli.py`, `ui/app.py`, `core/{types,traces}.py`,
 `device/{protocol,models,link_api,simulator,link}.py`; the rest of the tree
 is still to be written. `io/` is deliberately named like the stdlib module; all imports are absolute so it is safe.
 
