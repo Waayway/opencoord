@@ -76,6 +76,9 @@ each with a `.json` sidecar):
   2.4G 4, WSUB3G 5, 6G 6, WSUB1G+ 10 (verified, F1), AudioPro 11, 2400+ 12, 4G+ 13, 6G+ 14, W5G3G 16, W5G4G 17,
   W5G5G 18, RFGen 60, RFGen expansion 61, none 255. ⚠ all but 10 and 255 unverified on hardware.
 - `Capabilities` are merged from the table hint and the live `#C2-F` reply; the reply wins.
+- Implemented in `src/opencoord/device/models.py`: `MODELS` (code -> `ModelHint`) and `resolve(ModelInfo, DeviceConfig|None) -> Capabilities`
+  (active module: expansion hints only when `config.expansion_active`; config min/max/span win; exposes `main_name`/`expansion_name`).
+  Ranges other than code 10 are spec-derived hints, not hardware-verified.
 - Unknown codes: the app keeps working using the reported limits and shows "Unknown model (code N)".
 
 ## Segmented scanning (`scanner.py`)
