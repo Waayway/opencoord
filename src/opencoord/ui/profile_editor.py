@@ -60,7 +60,10 @@ SPACING_LABELS: dict[str, str] = {
     "im5_3tx": "5th order, 3 transmitters (advanced)",
 }
 DEFAULT_STEP_KHZ = 25.0
-_SPLIT = re.compile(r"[,;\s]+")
+_SPLIT = re.compile(r"[;\s]+")
+_DECIMAL_COMMA = re.compile(r"\d+,\d+")
+_BAD_NUMBER = "is not a number (use MHz, e.g. 470.125 or 470,125)"
+_AMBIGUOUS = "is ambiguous: use '.' or ',' for decimals and '; ' or new lines between values"
 _HZ_PER_MHZ = 1_000_000
 _UIDS = itertools.count(1)
 
@@ -136,26 +139,34 @@ class PasteResult:
 
 
 def parse_channel_text(text: str) -> PasteResult:
-    """MHz values separated by newlines, commas, semicolons, spaces or tabs.
+    """MHz values separated by newlines, semicolons, tabs, spaces or a comma plus space.
 
-    A trailing ``MHz`` is accepted (``470.125MHz`` or ``470.125 MHz``). Each bad token gives one
-    error; good tokens are still returned, sorted and de-duplicated. Use a dot as decimal sign (a
-    comma separates values).
+    A comma directly between digits is a decimal separator (``470,125`` = 470.125 MHz). A token
+    that mixes dots and commas or has several commas (``470,125,470,250``) is ambiguous and gives
+    an error. A trailing ``MHz`` is accepted. Each bad token gives one error; good tokens are
+    still returned, sorted and de-duplicated.
     """
     seen: set[int] = set()
     errors: list[str] = []
     duplicates = 0
-    for raw in _SPLIT.split(text.strip()):
+    for piece in _SPLIT.split(text.strip()):
+        raw = piece.strip(",")  # a comma followed by white space separates values
         if not raw or raw.lower() == "mhz":
             continue
         token = raw[:-3] if raw.lower().endswith("mhz") else raw
+        if "," in token:
+            if token.count(",") > 1 or "." in token:
+                errors.append(f"{raw!r} {_AMBIGUOUS}")
+                continue
+            if _DECIMAL_COMMA.fullmatch(token):
+                token = token.replace(",", ".")
         try:
             value = Decimal(token)
         except InvalidOperation:
-            errors.append(f"{raw!r} is not a number (use MHz with a dot, e.g. 470.125)")
+            errors.append(f"{raw!r} {_BAD_NUMBER}")
             continue
         if not value.is_finite():
-            errors.append(f"{raw!r} is not a number (use MHz with a dot, e.g. 470.125)")
+            errors.append(f"{raw!r} {_BAD_NUMBER}")
         elif value <= 0:
             errors.append(f"{raw!r} must be above 0 MHz")
         elif value > MAX_MHZ:

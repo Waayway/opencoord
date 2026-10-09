@@ -276,9 +276,7 @@ class ProfilesPanel:
         self._a.select_preset(name)
 
     def _reset_preset(self) -> None:
-        d = self._a.preset_draft
-        if d is not None and d.original_name is not None:
-            self._a.reset_preset_to_builtin(d.original_name)
+        self._a.request_reset_preset()
 
     # --- layout ------------------------------------------------------------------------------
 
@@ -446,8 +444,9 @@ class ProfilesPanel:
             self._build_tuning(d)
         elif d.mode == "channels":
             dpg.add_text(
-                "One MHz value per line, or separated by commas, spaces or semicolons. "
-                "Use a dot for decimals (470.125). Duplicates are merged and the list is sorted.",
+                "One MHz value per line, or separated by semicolons, tabs, spaces or a comma and "
+                "a space. Decimals: 470.125 or 470,125. Duplicates are merged and the list is "
+                "sorted.",
                 color=theme.MUTED_COLOR,
                 wrap=WRAP,
                 parent=TAG_SOURCE,

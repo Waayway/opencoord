@@ -94,18 +94,34 @@ class ProfilesActions:
             self.say(f"Could not write the default spacing presets: {exc}", error=True)
         self.reload()
 
-    def reload(self) -> None:
-        """Re-read presets and profiles from disk (bad files end up in ``issues``)."""
+    def reload(self, *, report: bool = True) -> str | None:
+        """Re-read presets and profiles from disk (bad files end up in ``issues``).
+
+        Returns ``None`` on success, else the error text (also shown unless ``report`` is false,
+        which lets a caller fold it into its own message).
+        """
         try:
             self.presets, preset_issues = self.store.load_presets()
             profiles, profile_issues = self.store.load_profiles(self.presets)
         except OSError as exc:
             log.warning("could not read the profile folders", exc_info=True)
-            self.say(f"Could not read the profile folders: {exc}", error=True)
-            return
+            error = f"Could not read the profile folders: {exc}"
+            if report:
+                self.say(error, error=True)
+            return error
         self.profiles = {p.name: p for p in sorted(profiles, key=lambda p: p.name.casefold())}
         self.issues = [*preset_issues, *profile_issues]
         self._bump()
+        return None
+
+    def _done(self, message: str, reload_error: str | None) -> None:
+        """Say ``message``; a failed reload is added instead of being overwritten by it."""
+        if reload_error:
+            self.say(
+                f"{message}, but the lists could not be refreshed ({reload_error})", error=True
+            )
+        else:
+            self.say(message)
 
     @property
     def preset_names(self) -> list[str]:
@@ -268,8 +284,7 @@ class ProfilesActions:
             self.say(f"Could not save the profile: {exc}", error=True)
             return False
         d.mark_saved(profile.name)
-        self.reload()
-        self.say(f"Saved profile '{profile.name}'")
+        self._done(f"Saved profile '{profile.name}'", self.reload(report=False))
         return True
 
     def request_delete_profile(self) -> None:
@@ -293,10 +308,10 @@ class ProfilesActions:
         except OSError as exc:
             self.say(f"Could not delete the profile: {exc}", error=True)
             return
-        self.reload()
+        error = self.reload(report=False)
         if self.draft is not None and self.draft.original_name == name:
             self._set_draft(None)
-        self.say(f"Deleted profile '{name}'")
+        self._done(f"Deleted profile '{name}'", error)
 
     # --- profiles: import / export -------------------------------------------------------------
 
@@ -398,6 +413,22 @@ class ProfilesActions:
     def profiles_using(self, preset_name: str) -> list[str]:
         return [n for n, p in self.profiles.items() if p.spacing_preset == preset_name]
 
+    def _issue_users(self, preset_name: str) -> tuple[list[str], list[str]]:
+        """Profile files that failed to load: ``(names using the preset, unreadable ones)``."""
+        using: list[str] = []
+        unknown: list[str] = []
+        for issue in self.issues:
+            if issue.path.parent != self.store.profiles_dir:
+                continue
+            try:
+                head = tomllib.loads(issue.path.read_text(encoding="utf-8")).get("profile")
+            except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError):
+                unknown.append(issue.path.name)
+                continue
+            if isinstance(head, dict) and head.get("spacing") == preset_name:
+                using.append(issue.path.name)
+        return using, unknown
+
     def save_preset(self) -> bool:
         d = self.preset_draft
         if d is None:
@@ -408,16 +439,9 @@ class ProfilesActions:
             return False
         old = d.original_name
         renamed = old is not None and old != preset.name
-        updated: list[str] = []
         try:
             if renamed and old is not None:
                 self.store.rename_preset(old, preset)
-                # Profiles point at presets by name: follow the rename.
-                for pname in self.profiles_using(old):
-                    self.store.save_profile(
-                        replace(self.profiles[pname], spacing_preset=preset.name)
-                    )
-                    updated.append(pname)
             else:
                 self.store.save_preset(preset)
         except FileExistsError as exc:
@@ -428,14 +452,45 @@ class ProfilesActions:
             self.say(f"Could not save the preset: {exc}", error=True)
             return False
         d.mark_saved(preset.name)
-        if renamed and old is not None and self.draft is not None and self.draft.preset == old:
-            was_dirty = self.draft.dirty
-            self.draft.set_preset(preset.name)
-            if not was_dirty:
-                self.draft.mark_saved(self.draft.original_name)
-        self.reload()
+        # The rename is done. Profiles point at presets by name, so follow it; one failing profile
+        # must not stop the others, and the lists are refreshed whatever happens.
+        updated: list[str] = []
+        failed: list[str] = []
+        if renamed and old is not None:
+            for pname in self.profiles_using(old):
+                try:
+                    self.store.save_profile(
+                        replace(self.profiles[pname], spacing_preset=preset.name)
+                    )
+                    updated.append(pname)
+                except OSError as exc:
+                    log.warning("could not update profile %s", pname, exc_info=True)
+                    failed.append(f"'{pname}' ({exc})")
+            stale, _unknown = self._issue_users(old)
+            if self.draft is not None and self.draft.preset == old:
+                was_dirty = self.draft.dirty
+                self.draft.set_preset(preset.name)
+                if not was_dirty:
+                    self.draft.mark_saved(self.draft.original_name)
+        else:
+            stale = []
+        error = self.reload(report=False)
+        if renamed and (failed or stale):
+            problems = []
+            if failed:
+                problems.append(
+                    f"{len(failed)} profile(s) could not be updated: {', '.join(failed)}"
+                )
+            if stale:
+                problems.append(
+                    f"{len(stale)} profile file(s) that fail to load still use '{old}': "
+                    + ", ".join(stale)
+                )
+            self._done(f"Renamed to '{preset.name}', but " + "; ".join(problems), error)
+            self.message_is_error = True
+            return True
         suffix = f"; {len(updated)} profile(s) now use the new name" if updated else ""
-        self.say(f"Saved spacing preset '{preset.name}'{suffix}")
+        self._done(f"Saved spacing preset '{preset.name}'{suffix}", error)
         return True
 
     def request_delete_preset(self) -> None:
@@ -447,6 +502,14 @@ class ProfilesActions:
             return
         name = d.original_name or d.name
         users = self.profiles_using(name)
+        files, unknown = self._issue_users(name)
+        users += [f"{f} (fails to load)" for f in files]
+        if (
+            self.draft is not None
+            and self.draft.preset == name
+            and not any(self.draft.original_name == u for u in users)
+        ):
+            users.append(f"{self.draft.name.strip() or 'the open profile'} (open, unsaved)")
         if users:
             shown = ", ".join(f"'{u}'" for u in users[:5]) + (", ..." if len(users) > 5 else "")
             self.say(
@@ -455,6 +518,8 @@ class ProfilesActions:
             )
             return
         hint = " It can be restored later." if name in builtin_presets() else ""
+        if unknown:
+            hint += f" Unreadable profile files might use it: {', '.join(unknown[:5])}."
         self._ask(
             "preset",
             f"Delete spacing preset '{name}' permanently?{hint}",
@@ -468,10 +533,10 @@ class ProfilesActions:
         except OSError as exc:
             self.say(f"Could not delete the preset: {exc}", error=True)
             return
-        self.reload()
+        error = self.reload(report=False)
         if self.preset_draft is not None and self.preset_draft.original_name == name:
             self._set_preset_draft(None)
-        self.say(f"Deleted spacing preset '{name}'")
+        self._done(f"Deleted spacing preset '{name}'", error)
 
     # built-in presets
 
@@ -486,6 +551,25 @@ class ProfilesActions:
     def missing_builtin_presets(self) -> list[str]:
         return [n for n in builtin_presets() if n not in self.presets]
 
+    def request_reset_preset(self) -> None:
+        """Ask before overwriting the open built-in preset with its shipped values."""
+        d = self.preset_draft
+        if d is None or d.original_name is None:
+            return
+        name = d.original_name
+        if not self.is_builtin_preset(name):
+            self.say(f"'{name}' is not a built-in preset", error=True)
+            return
+        self._ask(
+            "preset",
+            f"Reset '{name}' to its built-in values? Your values (and unsaved edits) are lost.",
+            "Yes, reset",
+            lambda: self._reset_confirmed(name),
+        )
+
+    def _reset_confirmed(self, name: str) -> None:
+        self.reset_preset_to_builtin(name)
+
     def reset_preset_to_builtin(self, name: str) -> bool:
         """Write the shipped values of built-in preset ``name`` (also restores a deleted one)."""
         try:
@@ -496,11 +580,11 @@ class ProfilesActions:
         except OSError as exc:
             self.say(f"Could not reset the preset: {exc}", error=True)
             return False
-        self.reload()
+        error = self.reload(report=False)
         d = self.preset_draft
-        if d is not None and d.original_name == name:
+        if d is not None and d.original_name == name and name in self.presets:
             self._set_preset_draft(PresetDraft.from_preset(self.presets[name], name))
-        self.say(f"Spacing preset '{name}' is back to its built-in values")
+        self._done(f"Spacing preset '{name}' is back to its built-in values", error)
         return True
 
 

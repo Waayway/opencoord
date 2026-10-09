@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+from opencoord.coord.profiles import DeviceProfile
 from opencoord.coord.spacing import builtin_presets
 from opencoord.io.profile_store import ProfileStore
 from opencoord.ui.profiles_actions import ProfilesActions
@@ -276,3 +277,142 @@ def test_external_say_callback_gets_messages(store: ProfileStore) -> None:
     pa.startup()
     pa.select_profile("nope")
     assert seen == ["No profile named 'nope'"]
+
+
+# --- failure paths ---------------------------------------------------------------------------
+
+
+def test_preset_rename_with_failing_profile_update_still_finishes(
+    pa: ProfilesActions, store: ProfileStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    new_saved(pa, "Good")
+    new_saved(pa, "Bad")
+    real = store.save_profile
+
+    def flaky(profile: DeviceProfile) -> None:
+        if profile.name == "Bad":
+            raise OSError("disk full")
+        real(profile)
+
+    pa.select_preset("generic-analog")
+    assert pa.preset_draft is not None
+    pa.preset_draft.set_name("renamed")
+    monkeypatch.setattr(store, "save_profile", flaky)
+    assert pa.save_preset()
+    monkeypatch.undo()
+    assert "renamed" in pa.presets and "generic-analog" not in pa.presets
+    assert pa.preset_draft is not None and not pa.preset_draft.dirty
+    assert pa.preset_draft.original_name == "renamed"
+    assert pa.message_is_error
+    assert pa.message.startswith("Renamed to 'renamed', but 1 profile(s) could not be updated")
+    assert "'Bad' (disk full)" in pa.message
+    assert "Good" in pa.profiles and pa.profiles["Good"].spacing_preset == "renamed"
+    # Bad still points at the old, now missing name: it shows up as a load issue.
+    assert "Bad" not in pa.profiles and [i.path.name for i in pa.issues] == ["bad.toml"]
+
+
+def test_rename_mentions_unloadable_profiles_that_use_the_old_name(
+    pa: ProfilesActions, tmp_path: Path
+) -> None:
+    (tmp_path / "cfg" / "profiles").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "cfg" / "profiles" / "odd.toml").write_text(
+        '[profile]\nname = "Odd"\nspacing = "iem"\nwhatever = 1\n'
+    )
+    pa.reload()
+    pa.select_preset("iem")
+    assert pa.preset_draft is not None
+    pa.preset_draft.set_name("iem2")
+    assert pa.save_preset()
+    assert "odd.toml" in pa.message and "still use 'iem'" in pa.message
+
+
+@pytest.mark.parametrize(
+    "method", ["save_profile", "delete_profile", "save_preset", "delete_preset"]
+)
+def test_store_errors_become_messages(
+    pa: ProfilesActions, store: ProfileStore, monkeypatch: pytest.MonkeyPatch, method: str
+) -> None:
+    def boom(*_: object) -> None:
+        raise OSError("read-only")
+
+    new_saved(pa, "P")
+    assert pa.draft is not None
+    monkeypatch.setattr(store, method, boom)
+    if method == "save_profile":
+        pa.draft.set_name("P2")
+        assert not pa.save_profile() and pa.draft.dirty
+        assert pa.message == "Could not save the profile: read-only"
+    elif method == "delete_profile":
+        pa.request_delete_profile()
+        pa.confirm_pending()
+        assert pa.message == "Could not delete the profile: read-only"
+        assert "P" in pa.profiles and pa.draft is not None
+    elif method == "save_preset":
+        pa.select_preset("digital")
+        assert pa.preset_draft is not None
+        pa.preset_draft.set_value("carrier", 5)
+        assert not pa.save_preset() and pa.preset_draft.dirty
+        assert pa.message == "Could not save the preset: read-only"
+    else:
+        pa.select_preset("digital")
+        pa.request_delete_preset()
+        pa.confirm_pending()
+        assert pa.message == "Could not delete the preset: read-only"
+        assert "digital" in pa.presets
+    assert pa.message_is_error
+
+
+def test_reload_failure_is_not_hidden_by_the_success_message(
+    pa: ProfilesActions, store: ProfileStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pa.new_from_template("generic-iem")
+
+    def broken(*_: object) -> None:
+        raise OSError("gone")
+
+    monkeypatch.setattr(store, "load_profiles", broken)
+    assert pa.save_profile()
+    assert pa.message.startswith(
+        "Saved profile 'Generic IEM', but the lists could not be refreshed"
+    )
+    assert "gone" in pa.message and pa.message_is_error
+
+
+def test_reset_to_builtin_asks_first(pa: ProfilesActions) -> None:
+    pa.select_preset("iem")
+    assert pa.preset_draft is not None
+    pa.preset_draft.set_value("carrier", 700)
+    assert pa.save_preset()
+    pa.request_reset_preset()
+    assert pa.pending is not None and pa.pending.confirm_label == "Yes, reset"
+    assert pa.presets["iem"].rules.carrier == 700_000
+    pa.confirm_pending()
+    assert pa.presets["iem"].rules.carrier == 600_000
+    pa.clone_preset()
+    assert pa.preset_draft is not None and pa.save_preset()
+    pa.request_reset_preset()
+    assert pa.pending is None and pa.message_is_error  # a clone is not built in
+
+
+def test_preset_in_use_by_open_draft_or_broken_file_blocks_delete(
+    pa: ProfilesActions, tmp_path: Path
+) -> None:
+    pa.new_blank()
+    assert pa.draft is not None
+    pa.draft.set_preset("iem")  # open, never saved
+    pa.select_preset("iem")
+    pa.request_delete_preset()
+    assert pa.pending is None and "open, unsaved" in pa.message
+    pa.draft.set_preset("digital")
+    (tmp_path / "cfg" / "profiles").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "cfg" / "profiles" / "odd.toml").write_text(
+        '[profile]\nname = "Odd"\nspacing = "iem"\nwhatever = 1\n'
+    )
+    (tmp_path / "cfg" / "profiles" / "junk.toml").write_bytes(b"\xff\xfe")
+    pa.reload()
+    pa.request_delete_preset()
+    assert pa.pending is None and "odd.toml (fails to load)" in pa.message
+    (tmp_path / "cfg" / "profiles" / "odd.toml").unlink()
+    pa.reload()
+    pa.request_delete_preset()
+    assert pa.pending is not None and "junk.toml" in pa.pending.prompt

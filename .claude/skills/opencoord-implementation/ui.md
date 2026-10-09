@@ -143,7 +143,7 @@
     table names, tuning ranges are 1-based, a name clash is an error). A draft keeps the data of all three frequency
     sources; `dropped_warning()` says what saving drops. Channel lists are `ChannelList` (free text kept as typed + parsed
     values); `parse_channel_text` splits on newline/comma/semicolon/space/tab, accepts a trailing `MHz`, reports one error
-    per bad token, and returns sorted unique Hz (Decimal based, so `470.125` is exact; comma is a separator, use a dot).
+    per bad token, and returns sorted unique Hz (Decimal based, so `470.125` is exact). Separators: newline, `;`, tab, space, or a comma followed by white space; a comma directly between digits is a decimal comma (`470,125` = 470.125); several commas or dot+comma in one token (`470,125,470,250`) is an "ambiguous" error.
     `preview()` = `Preview(count, span, per_group)`, `effective_spacing(preset_rules)` = per rule preset vs used kHz.
     `dirty` (edited since load/save; clones and imports count as edited), `unsaved` (= dirty or never stored),
     `revision` (every edit), `structure_version` (rows added/removed, mode change) and `uid` (draft identity).
@@ -153,8 +153,8 @@
     `store.rename_profile`), `request_delete_profile` (confirm first; an unsaved draft is just dropped), `import_profile`
     (opens an unsaved draft; unknown preset falls back to the default one with a note, a taken name gets a suffix),
     `export_profile`, and for presets `new_preset/select_preset/clone_preset/save_preset/request_delete_preset`,
-    `reset_preset_to_builtin` (also restores a deleted built-in), `missing_builtin_presets`. Switching away from a dirty
-    draft asks first (`pending`). Renaming a preset rewrites the profiles that use it; deleting a preset in use is refused.
+    `request_reset_preset` (asks first) / `reset_preset_to_builtin` (also restores a deleted built-in), `missing_builtin_presets`. Switching away from a dirty
+    draft asks first (`pending`). Renaming a preset rewrites the profiles that use it (a failing profile is reported, never aborts: the rename is always finished, marked saved and reloaded; unloadable profile files still naming the old preset are listed); deleting a preset in use (saved profiles, the open draft, load-issue files naming it) is refused. A failed reload is appended to the success message.
   - `ProfilesPanel`: two sub-tabs (Profiles | Spacing presets), load issues in red at the top, the Save / Clone / Export /
     Delete row and the red error list sit right under the header (no scrolling to find them). Callbacks only change the
     draft; `update()` rebuilds `profiles.source` (ranges / channel box / groups) when `(uid, structure_version)` changes

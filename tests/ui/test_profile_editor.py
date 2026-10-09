@@ -35,12 +35,32 @@ def test_paste_mixed_separators_sorted_and_deduped() -> None:
     assert r.ok and r.duplicates == 0
 
 
-@pytest.mark.parametrize("sep", ["\n", ",", ";", " ", "\t", " , ", ";\n", "\r\n"])
+@pytest.mark.parametrize("sep", ["\n", ", ", ";", " ", "\t", " , ", ";\n", "\r\n", ",\n"])
 def test_paste_accepts_every_separator(sep: str) -> None:
     assert parse_channel_text(sep.join(["606.5", "606.1", "606.3"])).values_hz == (
         606_100_000,
         606_300_000,
         606_500_000,
+    )
+
+
+def test_paste_decimal_comma_and_ambiguity() -> None:
+    assert parse_channel_text("470,125").values_hz == (470_125_000,)
+    assert parse_channel_text("470, 125").values_hz == (125_000_000, 470_000_000)
+    assert parse_channel_text("470;125").values_hz == (125_000_000, 470_000_000)
+    assert parse_channel_text("470\t125").values_hz == (125_000_000, 470_000_000)
+    assert parse_channel_text("470\n125").values_hz == (125_000_000, 470_000_000)
+    assert parse_channel_text("470,125 MHz").values_hz == (470_125_000,)
+    mixed = parse_channel_text("470,125; 471,5")
+    assert mixed.ok and mixed.values_hz == (470_125_000, 471_500_000)
+    bad = parse_channel_text("470,125,470,250")
+    assert bad.values_hz == () and len(bad.errors) == 1
+    assert bad.errors[0].startswith("'470,125,470,250' is ambiguous: use '.' or ','")
+    assert parse_channel_text("470.125,470.250").errors[0].endswith("between values")
+    assert parse_channel_text("470.125, 470.250\n471").values_hz == (
+        470_125_000,
+        470_250_000,
+        471_000_000,
     )
 
 
@@ -51,12 +71,14 @@ def test_paste_dedupes_and_counts_duplicates() -> None:
 
 def test_paste_junk_tokens_give_one_error_each_and_keep_the_good_ones() -> None:
     r = parse_channel_text("470.1 abc -5 0 1e999999 nan inf 12,x 471")
-    assert r.values_hz == (12_000_000, 470_100_000, 471_000_000)
+    assert r.values_hz == (470_100_000, 471_000_000)
     assert len(r.errors) == 7
     assert "'abc' is not a number" in r.errors[0]
     assert any("'-5' must be above 0" in e for e in r.errors)
     assert any("'1e999999' is above the limit" in e for e in r.errors)
-    assert any("'nan'" in e for e in r.errors) and any("'x'" in e for e in r.errors)
+    assert any("'nan'" in e for e in r.errors) and any(
+        "'12,x' is not a number" in e for e in r.errors
+    )
 
 
 def test_paste_accepts_mhz_suffix_and_blank_text() -> None:
@@ -132,7 +154,7 @@ def test_channels_mode_reports_paste_errors_and_empty() -> None:
     assert d.validate(PRESETS) == ["Paste at least one channel (MHz)"]
     d.paste_channels("470.125, oops\n471")
     errors = d.validate(PRESETS)
-    assert errors == ["Channels: 'oops' is not a number (use MHz with a dot, e.g. 470.125)"]
+    assert errors == ["Channels: 'oops' is not a number (use MHz, e.g. 470.125 or 470,125)"]
     d.paste_channels("470.125, 470.250\n471")
     profile, errors = d.build(PRESETS)
     assert errors == [] and profile is not None
@@ -179,7 +201,7 @@ def test_groups_mode_counts_per_group() -> None:
     assert "needs at least one channel" in d.validate(PRESETS)[0]
     d.paste_channels("x", group=b)
     assert d.validate(PRESETS) == [
-        "Group B: 'x' is not a number (use MHz with a dot, e.g. 470.125)"
+        "Group B: 'x' is not a number (use MHz, e.g. 470.125 or 470,125)"
     ]
     d.remove_group(b)
     assert d.validate(PRESETS) == []
