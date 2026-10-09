@@ -97,8 +97,9 @@ each with a `.json` sidecar):
 - `SegmentedScanner(link, start, stop, resolution, *, settle_timeout_s=10, clock=time.monotonic)` clamps the range to
   the capabilities and needs an open link. If the device cannot do the preset's points (`sweep_points_max`, e.g. 112
   on legacy models) the points are clamped and the segment narrowed to keep the bin width (`sweep_points` property).
-  `SegmentedScanner.overview(link, start, stop)` is one segment clamped to `max_span_hz` at the device's current
-  point count, one sweep; `range_hz` gives the range actually scanned.
+  `range_hz` gives the range actually scanned. There is no separate "quick overview" scan (the plan's single wide
+  sweep): Live mode is that overview (the controller tunes the device's max span), so `SegmentedScanner.overview`
+  was removed in the final review as dead code.
 - `step()` never blocks: on the first call it remembers `link.config`, calls `set_sweep_points` if the preset differs
   and `set_span` for segment 0; then it drains `link.sweeps` with `get_nowait()`. A sweep counts only when
   `link.config` **and** the sweep's own axis match the requested segment (point count equal, start/stop within one

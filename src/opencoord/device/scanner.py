@@ -79,9 +79,6 @@ PRESETS: dict[Resolution, ScanPreset] = {
     # 39 kHz bins (RBW 48 kHz); 470-960 MHz in 25 segments, about 2 min.
     Resolution.FINE: ScanPreset(20 * _MHZ, 2, 512, 0.61),
 }
-#: Sweep rate assumed for an overview (one wide sweep at the device's current points; 112 points
-#: over 100 MHz measured 1.71/s).
-OVERVIEW_SWEEPS_PER_S = 1.7
 #: Fastest sweep rate measured (112 points); caps the estimate when a preset's points are reduced.
 _MAX_SWEEPS_PER_S = 3.35
 
@@ -176,7 +173,6 @@ class SegmentedScanner:
         *,
         settle_timeout_s: float = DEFAULT_SETTLE_TIMEOUT_S,
         clock: Callable[[], float] = time.monotonic,
-        _overview: bool = False,
     ) -> None:
         if stop_hz <= start_hz:
             raise ValueError("stop must be greater than start")
@@ -189,24 +185,18 @@ class SegmentedScanner:
         self._link = link
         self._clock = clock
         self._settle_timeout = settle_timeout_s
-        if _overview:
-            self._points = config.sweep_points
-            self._sweeps_per_segment = 1
-            self._sweeps_per_s = OVERVIEW_SWEEPS_PER_S
-            self._segments = [Segment(start, min(stop, start + caps.max_span_hz))]
-        else:
-            preset = PRESETS[resolution]
-            span, rate = preset.segment_span_hz, preset.sweeps_per_s
-            points = min(preset.sweep_points, max(caps.sweep_points_max, config.sweep_points))
-            if points != preset.sweep_points:
-                # The device cannot do the preset's points: keep the bin width with a narrower
-                # segment. Sweep time scales roughly with points, capped at the fastest measured.
-                span = round(preset.segment_span_hz * (points - 1) / (preset.sweep_points - 1))
-                rate = min(rate * preset.sweep_points / points, _MAX_SWEEPS_PER_S)
-            self._points = points
-            self._sweeps_per_segment = preset.sweeps_per_segment
-            self._sweeps_per_s = rate
-            self._segments = plan_segments(start, stop, span, points)
+        preset = PRESETS[resolution]
+        span, rate = preset.segment_span_hz, preset.sweeps_per_s
+        points = min(preset.sweep_points, max(caps.sweep_points_max, config.sweep_points))
+        if points != preset.sweep_points:
+            # The device cannot do the preset's points: keep the bin width with a narrower
+            # segment. Sweep time scales roughly with points, capped at the fastest measured.
+            span = round(preset.segment_span_hz * (points - 1) / (preset.sweep_points - 1))
+            rate = min(rate * preset.sweep_points / points, _MAX_SWEEPS_PER_S)
+        self._points = points
+        self._sweeps_per_segment = preset.sweeps_per_segment
+        self._sweeps_per_s = rate
+        self._segments = plan_segments(start, stop, span, points)
         self._original: DeviceConfig | None = None
         self._phase: _Phase = "idle"
         self._stalled = False
@@ -220,29 +210,13 @@ class SegmentedScanner:
         self._last_progress = 0.0
         self._restore_from: DeviceConfig | None = None
 
-    @classmethod
-    def overview(
-        cls,
-        link: Link,
-        start_hz: int,
-        stop_hz: int,
-        *,
-        settle_timeout_s: float = DEFAULT_SETTLE_TIMEOUT_S,
-        clock: Callable[[], float] = time.monotonic,
-    ) -> SegmentedScanner:
-        """One sweep over the range (clamped to the device's max span) at the current points."""
-        return cls(
-            link, start_hz, stop_hz, settle_timeout_s=settle_timeout_s, clock=clock, _overview=True
-        )
-
     @property
     def segments(self) -> list[Segment]:
         return list(self._segments)
 
     @property
     def range_hz(self) -> tuple[int, int]:
-        """The range actually scanned, after clamping to the device (and, for an overview, to
-        its max span)."""
+        """The range actually scanned, after clamping to the device."""
         return self._segments[0].start_hz, self._segments[-1].stop_hz
 
     @property
@@ -429,7 +403,6 @@ class SegmentedScanner:
 
 __all__ = [
     "MAX_RETUNES",
-    "OVERVIEW_SWEEPS_PER_S",
     "PRESETS",
     "Resolution",
     "ScanPreset",

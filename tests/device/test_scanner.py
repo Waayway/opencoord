@@ -429,24 +429,6 @@ def test_rerequests_a_segment_that_does_not_settle_then_stalls() -> None:
     assert p.done and p.stalled and scanner.result is None
 
 
-def test_overview_is_one_clamped_sweep_at_current_points() -> None:
-    link = ManualLink(max_span_hz=300 * MHZ)
-    scanner = SegmentedScanner.overview(link, 470 * MHZ, 960 * MHZ)
-    assert scanner.range_hz == (470 * MHZ, 770 * MHZ)
-    assert [(s.start_hz, s.stop_hz) for s in scanner.segments] == [(470 * MHZ, 770 * MHZ)]
-    p = scanner.step()
-    assert link.requests == [("span", 470 * MHZ, 770 * MHZ)]  # no sweep-point change
-    link.confirm()
-    link.emit(level=0.0)  # discarded
-    link.emit(level=-90.0)
-    scanner.step()
-    link.confirm()
-    p = scanner.step()
-    assert p.done and scanner.result is not None
-    assert len(scanner.result.dbm) == 112 and float(scanner.result.dbm.max()) == -90.0
-    assert scanner.estimate_seconds() > 0
-
-
 def test_estimate_seconds_from_preset() -> None:
     link = ManualLink()
     for res in Resolution:
