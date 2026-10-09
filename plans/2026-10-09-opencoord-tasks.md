@@ -20,7 +20,8 @@ commit when your implementation adds or changes details; replace "(planned)" wit
 - Real hardware: RF Explorer WSUB1G PLUS SLIM on `/dev/ttyUSB0` (CP2102N, `10c4:ea60`); user has access.
   Hardware tests: `@pytest.mark.hardware`, skipped unless `OPENCOORD_HARDWARE=1`.
 - Do not push, tag, or publish. Commit on the current branch only. Commit messages end with
-  `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`.
+  `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>` followed by
+  `Claude-Session: https://claude.ai/code/session_01F7NJJ67wr6sKXpG8eBqLbz`.
 - Never run `git clean`; `.superpowers/` is scratch for the controller.
 
 ---
