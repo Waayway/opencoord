@@ -143,7 +143,7 @@
     table names, tuning ranges are 1-based, a name clash is an error). A draft keeps the data of all three frequency
     sources; `dropped_warning()` says what saving drops. Channel lists are `ChannelList` (free text kept as typed + parsed
     values); `parse_channel_text` splits on newline/comma/semicolon/space/tab, accepts a trailing `MHz`, reports one error
-    per bad token, and returns sorted unique Hz (Decimal based, so `470.125` is exact). Separators: newline, `;`, tab, space, or a comma followed by white space; a comma directly between digits is a decimal comma (`470,125` = 470.125); several commas or dot+comma in one token (`470,125,470,250`) is an "ambiguous" error.
+    per bad token, and returns sorted unique Hz (Decimal based, so `470.125` is exact). Separators: newline, `;`, tab, space, comma. A token with a `.` uses the dot as decimal mark and every comma in it separates (`606.5,606.1,606.3` = 3 values); without a dot one comma between digits is a decimal comma (`470,125` = 470.125) and several (`470,125,470,250`) are an "ambiguous" error.
     `preview()` = `Preview(count, span, per_group)`, `effective_spacing(preset_rules)` = per rule preset vs used kHz.
     `dirty` (edited since load/save; clones and imports count as edited), `unsaved` (= dirty or never stored),
     `revision` (every edit), `structure_version` (rows added/removed, mode change) and `uid` (draft identity).

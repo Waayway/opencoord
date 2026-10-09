@@ -35,7 +35,7 @@ def test_paste_mixed_separators_sorted_and_deduped() -> None:
     assert r.ok and r.duplicates == 0
 
 
-@pytest.mark.parametrize("sep", ["\n", ", ", ";", " ", "\t", " , ", ";\n", "\r\n", ",\n"])
+@pytest.mark.parametrize("sep", ["\n", ",", ", ", ";", " ", "\t", " , ", ";\n", "\r\n", ",\n"])
 def test_paste_accepts_every_separator(sep: str) -> None:
     assert parse_channel_text(sep.join(["606.5", "606.1", "606.3"])).values_hz == (
         606_100_000,
@@ -56,7 +56,8 @@ def test_paste_decimal_comma_and_ambiguity() -> None:
     bad = parse_channel_text("470,125,470,250")
     assert bad.values_hz == () and len(bad.errors) == 1
     assert bad.errors[0].startswith("'470,125,470,250' is ambiguous: use '.' or ','")
-    assert parse_channel_text("470.125,470.250").errors[0].endswith("between values")
+    assert parse_channel_text("470.125,470.25").values_hz == (470_125_000, 470_250_000)
+    assert len(parse_channel_text("606.5,606.1,606.3").values_hz) == 3
     assert parse_channel_text("470.125, 470.250\n471").values_hz == (
         470_125_000,
         470_250_000,

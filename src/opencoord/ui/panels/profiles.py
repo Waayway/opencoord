@@ -444,9 +444,9 @@ class ProfilesPanel:
             self._build_tuning(d)
         elif d.mode == "channels":
             dpg.add_text(
-                "One MHz value per line, or separated by semicolons, tabs, spaces or a comma and "
-                "a space. Decimals: 470.125 or 470,125. Duplicates are merged and the list is "
-                "sorted.",
+                "One MHz value per line, or separated by semicolons, tabs, spaces or commas. "
+                "Decimals: 470.125 (then commas separate values) or 470,125 (one value). "
+                "Duplicates are merged and the list is sorted.",
                 color=theme.MUTED_COLOR,
                 wrap=WRAP,
                 parent=TAG_SOURCE,

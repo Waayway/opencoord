@@ -139,23 +139,30 @@ class PasteResult:
 
 
 def parse_channel_text(text: str) -> PasteResult:
-    """MHz values separated by newlines, semicolons, tabs, spaces or a comma plus space.
+    """MHz values separated by newlines, semicolons, tabs, spaces or commas.
 
-    A comma directly between digits is a decimal separator (``470,125`` = 470.125 MHz). A token
-    that mixes dots and commas or has several commas (``470,125,470,250``) is ambiguous and gives
-    an error. A trailing ``MHz`` is accepted. Each bad token gives one error; good tokens are
-    still returned, sorted and de-duplicated.
+    A token with a dot uses the dot as decimal mark, so every comma in it separates values
+    (``606.5,606.1``). Without a dot, one comma between digits is a decimal comma (``470,125`` =
+    470.125 MHz) and several commas (``470,125,470,250``) are ambiguous: an error. A trailing
+    ``MHz`` is accepted. Each bad token gives one error; good tokens are still returned, sorted
+    and de-duplicated.
     """
     seen: set[int] = set()
     errors: list[str] = []
     duplicates = 0
-    for piece in _SPLIT.split(text.strip()):
-        raw = piece.strip(",")  # a comma followed by white space separates values
-        if not raw or raw.lower() == "mhz":
+    pieces = [
+        raw
+        for piece in _SPLIT.split(text.strip())
+        # With a dot as decimal mark every comma is a separator ("606.5,606.1").
+        for raw in (piece.split(",") if "." in piece else [piece.strip(",")])
+        if raw
+    ]
+    for raw in pieces:
+        if raw.lower() == "mhz":
             continue
         token = raw[:-3] if raw.lower().endswith("mhz") else raw
         if "," in token:
-            if token.count(",") > 1 or "." in token:
+            if token.count(",") > 1:
                 errors.append(f"{raw!r} {_AMBIGUOUS}")
                 continue
             if _DECIMAL_COMMA.fullmatch(token):
