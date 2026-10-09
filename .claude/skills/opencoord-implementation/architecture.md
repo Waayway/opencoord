@@ -52,7 +52,7 @@ The project uses the `src/` layout so tests always run against the installed pac
 SerialLink thread ──Sweep──▶ queue ──▶ UI frame loop ──▶ TraceSet.update() ──▶ plot series / waterfall texture
                                              │
                      SegmentedScanner ◀──────┘ (owns segment schedule, emits stitched Trace + progress)
-UI "Coordinate" ──▶ worker thread: solver.solve(profiles, trace, exclusions, rules) ──▶ queue ──▶ results panel
+UI "Coordinate" ──▶ worker thread: solver.solve(CoordinationRequest) ──▶ queue ──▶ results panel
 ```
 
 ## UI controller (`ui/controller.py`)
