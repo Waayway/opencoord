@@ -11,7 +11,7 @@ import dataclasses
 import logging
 import math
 import tomllib
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -27,6 +27,8 @@ _MIN_WINDOW = 400
 #: Waterfall history rows accepted by the settings, the controller and the scan panel.
 WATERFALL_DEPTH_MIN = 10
 WATERFALL_DEPTH_MAX = 1000
+#: Largest amplitude offset (dB, either sign) accepted by the settings and the controller.
+AMP_OFFSET_LIMIT_DB = 50.0
 
 
 @dataclass(frozen=True)
@@ -43,6 +45,8 @@ class AppSettings:
     mode: str = "live"
     #: Threshold line level; ``None`` = hidden (omitted from the file, TOML has no null).
     threshold_dbm: float | None = None
+    #: Amplitude offset in dB by device key (``model_<code>``, see the controller); 0 is not stored.
+    amp_offsets: dict[str, float] = field(default_factory=dict)
 
 
 def default_path() -> Path:
@@ -78,6 +82,26 @@ def _valid(name: str, value: Any) -> bool:
     return False
 
 
+def _amp_offsets(value: Any) -> dict[str, float]:
+    """The valid entries of an ``[amp_offsets]`` table (others are logged and dropped)."""
+    if not isinstance(value, dict):
+        log.warning("ignoring invalid setting amp_offsets = %r", value)
+        return {}
+    out: dict[str, float] = {}
+    for key, offset in value.items():
+        ok = (
+            isinstance(offset, int | float)
+            and not isinstance(offset, bool)
+            and math.isfinite(offset)
+            and abs(offset) <= AMP_OFFSET_LIMIT_DB
+        )
+        if ok:
+            out[str(key)] = float(offset)
+        else:
+            log.warning("ignoring invalid amp_offsets entry %s = %r", key, offset)
+    return out
+
+
 def load(path: Path | None = None) -> AppSettings:
     """Settings from ``path`` (default :func:`default_path`); defaults if missing or unreadable."""
     path = path or default_path()
@@ -90,13 +114,15 @@ def load(path: Path | None = None) -> AppSettings:
         log.warning("ignoring unreadable settings file %s: %s", path, exc)
         return AppSettings()
     values: dict[str, Any] = {}
-    for field in dataclasses.fields(AppSettings):
-        if field.name not in data:
+    for fld in dataclasses.fields(AppSettings):
+        if fld.name not in data:
             continue
-        if _valid(field.name, data[field.name]):
-            values[field.name] = data[field.name]
+        if fld.name == "amp_offsets":
+            values["amp_offsets"] = _amp_offsets(data["amp_offsets"])
+        elif _valid(fld.name, data[fld.name]):
+            values[fld.name] = data[fld.name]
         else:
-            log.warning("ignoring invalid setting %s = %r", field.name, data[field.name])
+            log.warning("ignoring invalid setting %s = %r", fld.name, data[fld.name])
     if values.get("preset") == "":
         values["preset"] = None  # a custom range
     if "threshold_dbm" in values:
@@ -114,7 +140,7 @@ def save(settings: AppSettings, path: Path | None = None) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     data = dataclasses.asdict(settings)
     data["preset"] = settings.preset or ""
-    data = {k: v for k, v in data.items() if v is not None}
+    data = {k: v for k, v in data.items() if v is not None and v != {}}
     text = "# OpenCoord settings (written by the app)\n" + tomli_w.dumps(data)
     tmp = path.with_suffix(".toml.tmp")
     tmp.write_text(text, encoding="utf-8")
@@ -122,6 +148,7 @@ def save(settings: AppSettings, path: Path | None = None) -> None:
 
 
 __all__ = [
+    "AMP_OFFSET_LIMIT_DB",
     "WATERFALL_DEPTH_MAX",
     "WATERFALL_DEPTH_MIN",
     "AppSettings",

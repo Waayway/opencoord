@@ -14,6 +14,9 @@ AUTO_DETECT = "Auto-detect (RF Explorer USB)"
 SIMULATOR = "Simulator"
 TAG_MANUAL = "device.port_manual"
 TAG_CONNECT = "device.connect"
+TAG_MODULE_GROUP = "device.module"
+TAG_MODULE_MAIN = "device.module.main"
+TAG_MODULE_EXPANSION = "device.module.expansion"
 _INFO = ("status", "model", "firmware", "range", "span", "points", "tuned", "expansion")
 
 
@@ -69,6 +72,16 @@ def info_lines(state: AppState) -> dict[str, str]:
     return lines
 
 
+def module_labels(state: AppState) -> tuple[str, str] | None:
+    """Button labels ``(main, expansion)`` marking the active module; ``None`` without expansion."""
+    caps = state.capabilities
+    if caps is None or caps.expansion_name is None:
+        return None
+    main = caps.main_name + ("" if caps.expansion else " (active)")
+    expansion = caps.expansion_name + (" (active)" if caps.expansion else "")
+    return main, expansion
+
+
 class DevicePanel:
     def __init__(self, controller: Controller) -> None:
         self._c = controller
@@ -107,6 +120,22 @@ class DevicePanel:
         dpg.add_separator()
         for key in _INFO:
             dpg.add_text("", tag=f"device.info.{key}")
+        with dpg.group(tag=TAG_MODULE_GROUP, show=False):
+            dpg.add_text("Module")
+            with dpg.group(horizontal=True):
+                dpg.add_button(
+                    tag=TAG_MODULE_MAIN, callback=lambda: self._c.switch_module(True), width=165
+                )
+                dpg.add_button(
+                    tag=TAG_MODULE_EXPANSION,
+                    callback=lambda: self._c.switch_module(False),
+                    width=165,
+                )
+            dpg.add_text(
+                "Switching stops acquisition and clears the traces.",
+                color=theme.MUTED_COLOR,
+                wrap=330,
+            )
         dpg.add_separator()
         dpg.add_text("", tag="device.error", color=theme.ERROR_COLOR, wrap=330)
 
@@ -145,9 +174,15 @@ class DevicePanel:
             if dpg.does_item_exist(tag):
                 dpg.configure_item(tag, enabled=not locked)
         dpg.set_value("device.auto_connect", state.auto_connect)
+        module = module_labels(state)
+        dpg.configure_item(TAG_MODULE_GROUP, show=module is not None)
+        if module is not None:
+            can_switch = state.connection == "connected"
+            for tag, label in zip((TAG_MODULE_MAIN, TAG_MODULE_EXPANSION), module, strict=True):
+                dpg.configure_item(tag, label=label, enabled=can_switch)
         for key, line in info_lines(state).items():
             dpg.set_value(f"device.info.{key}", line)
         dpg.set_value("device.error", state.error or "")
 
 
-__all__ = ["DevicePanel", "connect_label", "info_lines", "port_items"]
+__all__ = ["DevicePanel", "connect_label", "info_lines", "module_labels", "port_items"]

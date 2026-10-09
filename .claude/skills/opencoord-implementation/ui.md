@@ -8,8 +8,8 @@
   - toolbar (`toolbar.*`): port combo + Connect/Disconnect, Live/Scan radio, preset combo, resolution combo,
     Start/Stop, Reset max hold
   - spectrum plot over the waterfall, in one `subplots(2, 1, link_all_x=True)` so the MHz axes line up
-  - right-hand tab bar (`tabs`, width 370): Device | Scan | Markers | Coordination | Profiles; the last three
-    show "Coming soon" until their tasks land
+  - right-hand tab bar (`tabs`, width 370): Device | Scan | Markers | Analysis | Coordination | Profiles; the last
+    two show "Coming soon" until their tasks land
   - a status bar (`status.line`): connection, mode, range, step/RBW, sweeps/s, last message, fps
 - **Shared widget values:** the toolbar and the panels show the same port/preset/resolution via value-registry
   `source` items (`ui.port_choice`, `ui.preset`, `ui.resolution`). Radio buttons do **not** redraw when their
@@ -29,7 +29,7 @@
   - hover: plot `crosshairs=True`; `spectrum.readout` shows cursor MHz/dBm plus the nearest level of max hold
     (or scan / live) via the pure `readout()`
   - markers, threshold line and reference traces: see "Markers, threshold, references" below
-  - (planned, Phase 5) TV channel overlay as shaded areas
+  - channel overlay, exclusion zones: `overlay.py`, see "Channel overlay, analysis" below
 - **Waterfall** (`waterfall.py` `WaterfallView`): a `dynamic_texture` `DISPLAY_BINS` (1024) wide and `depth` rows
   high (settings `waterfall_depth`, default 300), shown with an `image_series` whose bounds are the history's
   MHz range. Rows come from `WaterfallHistory` (newest first, resampled with `resample_max`: max per column so
@@ -86,6 +86,43 @@
     input (Enter applies; remembers the last value, default -90), visible-trace checkboxes, "Freeze current trace"
     and one row per reference (visibility checkbox + Remove). Pooled widgets (`markers.row.N`, ...) are shown or
     hidden; the panel refreshes when `ui_version` or `trace_version` changes.
+- **Channel overlay, analysis** (Task 15):
+  - `ui/overlay.py` `OverlayView` (owned by `SpectrumView`, `spectrum.overlay`): all pooled, rewritten only when
+    its key (overlay on, plan name, analysis object, zones) changes. Channel edges = one `inf_line_series`
+    (`overlay.grid`, added before the traces); band / span shading and exclusion zones = `draw_rectangle` pools
+    (`overlay.span.N` x24, `overlay.zone.N` x16) on a `draw_layer` inside the plot (plot coordinates, +/-1000 dBm
+    tall so the plot clips them; they never affect the plot fit; an *outline* on such a tall rectangle renders as a
+    fat bar, so there is none). Channel numbers = clamped `plot_annotation` pool (`overlay.channel.N`, x64) pinned
+    to the top (y = 1000), background colour = occupancy (`occupancy_color`: grey no data, green < 1 % of bins
+    above the threshold, amber < 25 %, red above); zone labels `Xn` are pinned to the bottom. Clamping would pin
+    off-screen annotations to the plot edge, so each frame `get_axis_limits(x)` is compared and annotations whose
+    centre is outside the view are hidden. Band colours: allowed green, forbidden red, info blue (alpha ~35-45).
+    Zones are drawn even with the overlay off; the overlay itself starts off (`overlay_enabled` is state, not
+    persisted).
+  - `panels/analysis.py` `AnalysisPanel` (tab "Analysis"): overlay checkbox + plan combo (`channel_plans.available()`),
+    amplitude offset input (dB, Enter), exclusion zones (new start/stop MHz + Add, then one editable row per zone
+    with Delete; Enter applies), detected carriers table (MHz, dBm, Ch, "Add marker"; strongest
+    `MAX_CARRIER_ROWS` = 32) and a collapsing "Channel occupancy" table. Tables refresh only when
+    `Controller.analysis()` returns a new object (it is cached by trace_version, trace key, threshold, plan).
+  - **Exclusion zones are added with the start/stop inputs, not by mouse:** plain drags pan and modified clicks are
+    claimed by ImPlot/the marker Ctrl+click, and a mouse gesture cannot be tested headless. State:
+    `AppState.exclusion_zones` (`ExclusionZone(id, start_hz, stop_hz)`, ids 1..16, smallest free reused);
+    persistence comes with the sessions (Task 16).
+  - Controller intents: `set_overlay_enabled`, `set_channel_plan(name)`, `add_exclusion_zone(start, stop)` (either
+    order; `None` and a message when empty/at the limit), `update_exclusion_zone`, `remove_exclusion_zone`,
+    `clear_exclusion_zones`, `analysis()` -> `Analysis(key, trace_label, floor_dbm, threshold_db,
+    from_threshold_line, carriers: tuple[CarrierRow(carrier, channel)], occupancy)`. The analysed trace is the main
+    trace (`resolve_trace("max")`); threshold = threshold line when shown (`threshold_dbm - floor`), else floor + 10 dB.
+  - **Amplitude offset:** `Controller.amp_offset_db` / `set_amp_offset_db(db)` (+/-50 dB), kept in
+    `AppState.amp_offsets` and the `amp_offsets` setting under `amp_offset_key()` = `model_<code of the active
+    module>`. `Link` exposes no serial number (only `SerialLink.active_port`), so it is per model code, not per
+    unit. The offset is added to each live sweep, the scan result and the scan partial before `TraceSet` / the
+    waterfall (the device's own offset stays inside the levels `make_sweep` returns, untouched). Changing it clears
+    the traces and the waterfall (old data used another offset). Needs a connected device.
+  - **Module switcher:** in the Device tab, shown only when `capabilities.expansion_name` is set: two buttons
+    (main / expansion, the active one marked) calling `Controller.switch_module(main)`, which stops acquisition,
+    calls `link.switch_module`, clears traces and the waterfall; `_sync_device` drops a preset the new module cannot
+    tune. The simulator has no expansion, so this is only covered by a fake link in the tests.
 - **Simulator:** `opencoord --simulator` uses `SimulatedLink(sweep_points=512)` (like the WSUB1G+ at Normal/Fine) and
   connects on start; Live over 470-960 MHz is clamped to the 342.37 MHz max span at 512 points.
 - **Language:** English strings inline; no i18n. Labels use ASCII hyphens (default font).
@@ -94,7 +131,7 @@
   `python -m opencoord --smoke-frames 5` in a subprocess and, in-process, drives `App` frames against a
   512-point simulator: Live for 60 frames (asserts trace + waterfall + series data), then a Fast scan of
   470-500 MHz to completion, then a marker, reference, threshold, hidden trace and auto-scale (asserting the
-  drag lines, annotation and series); it logs fps. Dear PyGui segfaults when a second viewport/context is created in the
+  drag lines, annotation and series), then the channel overlay, an exclusion zone and the analysis panel; it logs fps. Dear PyGui segfaults when a second viewport/context is created in the
   same process, so only one test may open a window in-process.
 - **Performance (2026-10-09, 144 Hz Wayland desktop, vsync on):** Live at 512 points ~144 fps (vsync-bound),
   per-frame work ~0.2-0.4 ms; a 6261-point Normal 470-960 MHz scan trace re-pushed every frame still 144 fps.

@@ -102,7 +102,30 @@ def test_live_and_scan_against_the_simulator() -> None:
         for _ in range(2):
             assert app.frame()
         assert not dpg.get_item_configuration("spectrum.marker.0")["show"]
-        for tab in ("markers", "coordination", "profiles"):
+        # Channel overlay, exclusion zone and the analysis panel (scan view is 470-500 MHz).
+        assert not dpg.get_item_configuration("overlay.channel.0")["show"]
+        c.set_overlay_enabled(True)
+        c.add_exclusion_zone(480 * MHZ, 485 * MHZ)
+        for _ in range(4):
+            assert app.frame()
+        assert dpg.get_item_configuration("overlay.channel.0")["show"]  # channel 21, 474 MHz
+        assert dpg.get_item_configuration("overlay.channel.0")["label"] == "21"
+        assert not dpg.get_item_configuration("overlay.channel.10")["show"]  # channel 31, outside
+        assert dpg.get_item_configuration("overlay.span.0")["show"]
+        assert dpg.get_item_configuration("overlay.zone.0")["show"]
+        assert dpg.get_item_configuration("overlay.zone.0.note")["label"] == "X1"
+        assert dpg.get_value("overlay.grid")[0][:2] == [470.0, 478.0]
+        assert dpg.get_item_configuration("analysis.occ.row.0")["show"]
+        assert dpg.get_item_configuration("analysis.zone.row.0")["show"]
+        assert dpg.get_value("analysis.zone.start.0") == pytest.approx(480.0)
+        assert not dpg.get_item_configuration("device.module")["show"]  # no expansion module
+        c.set_overlay_enabled(False)
+        for _ in range(2):
+            assert app.frame()
+        assert not dpg.get_item_configuration("overlay.channel.0")["show"]
+        assert not dpg.get_item_configuration("overlay.span.0")["show"]
+        assert dpg.get_item_configuration("overlay.zone.0")["show"]  # zones stay drawn
+        for tab in ("markers", "analysis", "coordination", "profiles"):
             assert dpg.does_item_exist(f"tab.{tab}")
         stats = app.stats()
         log.info(

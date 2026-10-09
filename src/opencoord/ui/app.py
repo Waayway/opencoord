@@ -2,7 +2,7 @@
 
 Layout: a toolbar (port + connect, mode, preset, resolution, start/stop, reset max hold), the
 spectrum plot over the waterfall (x axes linked), a right-hand tab bar (Device | Scan | Markers |
-Coordination | Profiles) and a status bar. The frame loop is manual: each frame calls
+Analysis | Coordination | Profiles) and a status bar. The frame loop is manual: each frame calls
 ``Controller.tick()``, lets the views push changed data to Dear PyGui, then renders.
 """
 
@@ -28,6 +28,7 @@ from opencoord.ui import shortcuts, theme
 from opencoord.ui.controller import Controller, LinkFactory
 from opencoord.ui.panels import device as device_panel
 from opencoord.ui.panels import scan as scan_panel
+from opencoord.ui.panels.analysis import AnalysisPanel
 from opencoord.ui.panels.device import DevicePanel
 from opencoord.ui.panels.markers import MarkersPanel
 from opencoord.ui.panels.scan import ScanPanel
@@ -127,6 +128,7 @@ class App:
         self.device_panel = DevicePanel(controller)
         self.scan_panel = ScanPanel(controller)
         self.markers_panel = MarkersPanel(controller)
+        self.analysis_panel = AnalysisPanel(controller)
         self.spectrum = SpectrumView(controller)
         self.waterfall = WaterfallView()
         self._status_version = -1
@@ -172,6 +174,8 @@ class App:
                         self.scan_panel.build()
                     with dpg.tab(label="Markers", tag="tab.markers"):
                         self.markers_panel.build()
+                    with dpg.tab(label="Analysis", tag="tab.analysis"):
+                        self.analysis_panel.build()
                     for name in ("Coordination", "Profiles"):
                         with dpg.tab(label=name, tag=f"tab.{name.lower()}"):
                             dpg.add_text(COMING_SOON, color=theme.MUTED_COLOR)
@@ -187,6 +191,7 @@ class App:
                 *self.device_panel.text_inputs,
                 *self.scan_panel.text_inputs,
                 *self.markers_panel.text_inputs,
+                *self.analysis_panel.text_inputs,
             ],
         )
         self.controller.startup()
@@ -237,6 +242,7 @@ class App:
         self.device_panel.update(state)
         self.scan_panel.update(state)
         self.markers_panel.update(state)
+        self.analysis_panel.update(state)
         self.spectrum.update(state)
         self.waterfall.update(state)
         if state.ui_version != self._status_version or self._frames % 30 == 0:

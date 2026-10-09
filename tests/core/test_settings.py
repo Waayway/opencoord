@@ -115,3 +115,18 @@ def test_threshold_roundtrip_and_validation(tmp_path: Path) -> None:
     assert load(path).threshold_dbm is None
     path.write_text("threshold_dbm = nan\n", encoding="utf-8")
     assert load(path).threshold_dbm is None
+
+
+def test_amp_offsets_roundtrip_and_validation(tmp_path: Path) -> None:
+    path = tmp_path / "settings.toml"
+    assert load(path).amp_offsets == {}
+    save(AppSettings(amp_offsets={"model_10": 2.5, "model_3": -1.0}), path)
+    assert load(path).amp_offsets == {"model_10": 2.5, "model_3": -1.0}
+    save(AppSettings(), path)
+    assert "amp_offsets" not in path.read_text(encoding="utf-8")
+    path.write_text(
+        '[amp_offsets]\nmodel_10 = 3\nbad = "x"\nhuge = 900.0\nnan = nan\n', encoding="utf-8"
+    )
+    assert load(path).amp_offsets == {"model_10": 3.0}
+    path.write_text("amp_offsets = 5\n", encoding="utf-8")
+    assert load(path).amp_offsets == {}

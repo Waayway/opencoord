@@ -13,7 +13,8 @@ src/opencoord/
     link_api.py      Link Protocol + LinkEvent(kind, message) (done)
     simulator.py     SimulatedLink + pure generate(): same interface as SerialLink, synthetic spectra (done)
   core/
-    types.py         Sweep, DeviceConfig, ModelInfo, Trace, Carrier (done); Band, … (planned)
+    types.py         Sweep, DeviceConfig, ModelInfo, Trace, Carrier, ExclusionZone (done); Band, … (planned)
+    occupancy.py     pure (done): channel_occupancy(trace, channels, floor_dbm, threshold_db) -> [ChannelOccupancy(number, max_dbm, avg_dbm (power mean), percent_above)]
     markers.py       Marker (frozen), level_at, peak, next_peak, delta, MAX_MARKERS = 8 (pure, done)
     traces.py        pure (done): TraceSet (live/max/avg/min; average = exact mean of last N, dB domain; axis change resets),
                      noise_floor (20th percentile), find_peaks (own O(n) prominence, strongest first), detected_carriers
@@ -24,17 +25,18 @@ src/opencoord/
     profiles.py      DeviceProfile, SpacingRules, TOML load/save, templates
     imd.py           pure numpy intermod product generation
     solver.py        pure: solve(request) → Plan
-    channel_plans/   *.toml region data (eu.toml first)
+    channel_plans/   __init__ (available/load via importlib.resources), model.py (parse_plan, dataclasses), eu.toml (done)
   io/
     export_scan.py, export_plan.py, importers.py
   ui/
     state.py         AppState (what views render, version counters), WaterfallHistory, resample_max (no DPG)
     controller.py    Controller: owns link/TraceSet/scanner/settings; intents + tick(); no DPG (done)
-    app.py, spectrum.py, waterfall.py, theme.py, shortcuts.py, panels/{device,scan}.py (done; see ui.md)
+    app.py, spectrum.py, overlay.py, waterfall.py, theme.py, shortcuts.py, panels/{device,scan,markers,analysis}.py (done; see ui.md)
 ```
 Implemented so far: `__init__.py` (`__version__`), `__main__.py`, `cli.py`,
-`ui/{app,state,controller,spectrum,waterfall,theme,shortcuts}.py`, `ui/panels/{device,scan}.py`,
-`core/{types,traces,presets,settings}.py`,
+`ui/{app,state,controller,spectrum,overlay,waterfall,theme,shortcuts}.py`,
+`ui/panels/{device,scan,markers,analysis}.py`,
+`core/{types,traces,markers,occupancy,presets,settings}.py`, `coord/channel_plans/`,
 `device/{protocol,models,link_api,simulator,link,scanner}.py`; the rest of the tree
 is still to be written. `io/` is deliberately named like the stdlib module; all imports are absolute so it is safe.
 
@@ -52,8 +54,8 @@ UI "Coordinate" ──▶ worker thread: solver.solve(profiles, trace, exclusion
 - `Controller(link_factory, *, settings, port_lister=find_ports, simulator=False)`; `link_factory(port)` builds a
   `Link` (`SerialLink(port)` or `SimulatedLink`). Views call intents (`connect`, `disconnect`, `refresh_ports`,
   `start`, `stop`, `toggle`, `set_mode`, `set_range`, `set_center_span`, `set_preset`, `set_resolution`,
-  `reset_max_hold`, `set_waterfall_depth`, `set_auto_connect`, and the marker / threshold / reference intents listed
-  in `ui.md`) and render `controller.state` (`ui/state.py`
+  `reset_max_hold`, `set_waterfall_depth`, `set_auto_connect`, and the marker / threshold / reference / overlay /
+  exclusion zone / amplitude offset / module intents listed in `ui.md`) and render `controller.state` (`ui/state.py`
   `AppState`); the frame loop calls `tick()` once per frame. Unit-tested against `SimulatedLink` without DPG
   (`tests/ui/test_controller.py`).
 - `open()`/`close()` run on worker threads (they block up to 5 s); results (`_Opened`/`_OpenFailed`/`_Closed`)
@@ -81,7 +83,7 @@ UI "Coordinate" ──▶ worker thread: solver.solve(profiles, trace, exclusion
 - User data dir (`platformdirs.user_config_dir("opencoord")`): `settings.toml`, `profiles/*.toml`, `presets.toml`.
 - `core/settings.py` `AppSettings` keys: `last_port`, `auto_connect` (false), `preset` (`""` = custom range),
   `resolution`, `start_hz`/`stop_hz`, `window_width`/`window_height`, `waterfall_depth` (300, limits
-  `WATERFALL_DEPTH_MIN`/`MAX` = 10/1000 shared with the controller and scan panel), `mode` (`live`/`scan`), `threshold_dbm` (optional float, omitted when hidden).
+  `WATERFALL_DEPTH_MIN`/`MAX` = 10/1000 shared with the controller and scan panel), `mode` (`live`/`scan`), `threshold_dbm` (optional float, omitted when hidden), `amp_offsets` (`[amp_offsets]` table, device key `model_<code>` -> dB within +/-50; invalid entries dropped, omitted when empty).
   `load()` ignores unknown keys and replaces invalid values by defaults (logged); an unreadable file (OS error,
   bad TOML, invalid UTF-8) gives defaults. `save()` writes atomically (tmp + replace). The app loads on start and saves on exit.
 - Sessions are user-chosen files: `.opencoord` = zip with `session.json` (schema-versioned) + `traces.npz`.

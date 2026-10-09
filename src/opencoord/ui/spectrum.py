@@ -18,6 +18,7 @@ from opencoord.core.markers import MAX_MARKERS
 from opencoord.core.types import Trace
 from opencoord.ui import theme
 from opencoord.ui.controller import MAX_REFERENCES, Controller, MarkerRow
+from opencoord.ui.overlay import OverlayView
 from opencoord.ui.state import AppState
 
 #: (series key, legend label); tags are ``spectrum.trace.<key>``.
@@ -101,6 +102,7 @@ class SpectrumView:
         self._slot_ids: list[int | None] = [None] * MAX_MARKERS
         self._slot_x: list[float] = [np.nan] * MAX_MARKERS
         self._threshold_y = np.nan
+        self.overlay = OverlayView(controller, TAG_X)
 
     def build(self) -> None:
         """Add the plot (call inside the spectrum/waterfall subplots)."""
@@ -109,9 +111,11 @@ class SpectrumView:
             dpg.add_plot_legend(location=dpg.mvPlot_Location_NorthEast, no_buttons=True)
             dpg.add_plot_axis(dpg.mvXAxis, tag=TAG_X, no_label=True)
             with dpg.plot_axis(dpg.mvYAxis, tag=TAG_Y, label="Level (dBm)"):
+                self.overlay.build_grid()
                 for key, label in SERIES:
                     dpg.add_line_series([], [], label=label, tag=series_tag(key))
                     dpg.bind_item_theme(series_tag(key), theme.series_theme(key))
+            self.overlay.build_layers()
             for slot in range(MAX_MARKERS):
                 dpg.add_drag_line(
                     tag=marker_line_tag(slot),
@@ -187,6 +191,7 @@ class SpectrumView:
                         series_tag(key), [(trace.freqs_hz / 1e6).tolist(), trace.dbm.tolist()]
                     )
                 dpg.configure_item(series_tag(key), show=key not in state.hidden_traces)
+        self.overlay.update(state)
         if changed or state.ui_version != self._ui_version:
             self._trace_version, self._ui_version = state.trace_version, state.ui_version
             self._update_markers(state)

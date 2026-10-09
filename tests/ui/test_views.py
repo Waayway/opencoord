@@ -181,3 +181,52 @@ def test_marker_text_and_delta_text() -> None:
     assert delta_text(None) == ""
     assert delta_text((600_000, 10.04)) == "+0.600 MHz +10.0 dB"
     assert delta_text((-1_250_000, -3.0)) == "-1.250 MHz -3.0 dB"
+
+
+# --- analysis / overlay / module helpers ---------------------------------------------------------
+
+
+def test_occupancy_colour_steps() -> None:
+    from opencoord.ui.overlay import (
+        BUSY_COLOR,
+        FREE_COLOR,
+        PLAIN_COLOR,
+        SOME_COLOR,
+        occupancy_color,
+    )
+
+    assert occupancy_color(None) == PLAIN_COLOR
+    assert occupancy_color(0.0) == FREE_COLOR
+    assert occupancy_color(5.0) == SOME_COLOR
+    assert occupancy_color(25.0) == BUSY_COLOR
+
+
+def test_carrier_text_and_summary() -> None:
+    from opencoord.core.types import Carrier
+    from opencoord.ui.controller import Analysis, CarrierRow
+    from opencoord.ui.panels.analysis import analysis_summary, carrier_text
+
+    assert carrier_text(CarrierRow(Carrier(474_500_000, -51.23), 21)) == ("474.500", "-51.2", "21")
+    assert carrier_text(CarrierRow(Carrier(900_000_000, -60.0), None))[2] == "-"
+    assert "No trace" in analysis_summary(None)
+    a = Analysis(("k",), "Max hold", -100.0, 10.0, False, (), ())
+    assert "floor + 10 dB" in analysis_summary(a)
+    assert "threshold line" in analysis_summary(
+        Analysis(("k",), "Max hold", -100.0, 5.0, True, (), ())
+    )
+
+
+def test_module_labels_only_with_an_expansion() -> None:
+    from dataclasses import replace
+
+    from opencoord.ui.panels.device import module_labels
+
+    st = AppState()
+    assert module_labels(st) is None
+    caps = models.resolve(ModelInfo(10, None, "03.39"), _config())
+    st.capabilities = caps
+    assert module_labels(st) is None
+    st.capabilities = replace(caps, expansion_name="RF Explorer 2.4G")
+    assert module_labels(st) == ("RF Explorer WSUB1G+ (active)", "RF Explorer 2.4G")
+    st.capabilities = replace(caps, expansion_name="RF Explorer 2.4G", expansion=True)
+    assert module_labels(st) == ("RF Explorer WSUB1G+", "RF Explorer 2.4G (active)")

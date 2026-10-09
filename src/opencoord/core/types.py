@@ -96,3 +96,12 @@ class Carrier:
 
     freq_hz: int
     level_dbm: float
+
+
+@dataclass(frozen=True)
+class ExclusionZone:
+    """A frequency range the user wants kept clear (``start_hz < stop_hz``); ``id`` is 1-based."""
+
+    id: int
+    start_hz: int
+    stop_hz: int

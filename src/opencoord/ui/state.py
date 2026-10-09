@@ -14,9 +14,10 @@ from typing import Literal
 import numpy as np
 import numpy.typing as npt
 
+from opencoord.coord.channel_plans import ChannelPlan
 from opencoord.core.markers import Marker
 from opencoord.core.traces import TraceSet
-from opencoord.core.types import DeviceConfig, ModelInfo, Trace
+from opencoord.core.types import DeviceConfig, ExclusionZone, ModelInfo, Trace
 from opencoord.device.link import SerialPort
 from opencoord.device.models import Capabilities
 from opencoord.device.scanner import Resolution, ScanProgress
@@ -162,6 +163,13 @@ class AppState:
     y_limits_version: int = 0
     #: Cursor frequency while the mouse is over the spectrum plot, else ``None`` (set by the view).
     cursor_hz: int | None = None
+    #: Channel overlay on the spectrum: on/off and the plan (``None`` if it could not be loaded).
+    overlay_enabled: bool = False
+    channel_plan: ChannelPlan | None = None
+    #: User exclusion zones (at most ``MAX_EXCLUSION_ZONES``), ordered by id.
+    exclusion_zones: list[ExclusionZone] = field(default_factory=list)
+    #: Amplitude offsets in dB by device key (see ``Controller.amp_offset_key``); 0 is not stored.
+    amp_offsets: dict[str, float] = field(default_factory=dict)
     ui_version: int = 0
     trace_version: int = 0
 

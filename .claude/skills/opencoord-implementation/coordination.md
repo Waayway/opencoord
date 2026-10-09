@@ -60,13 +60,22 @@ Output: a `Plan` with assignments, unassigned devices with reasons, backups per 
 
 Invariant tested with Hypothesis: **no returned plan violates any active rule.**
 
-## Channel plans (`coord/channel_plans/*.toml`)
-Pure data:
-- region name and raster
-- a channel table (number → Hz edges)
-- band annotations (`pmse = "allowed" | "forbidden" | "info"`, note)
+## Channel plans (`coord/channel_plans/*.toml`) (done)
+Pure data, parsed by the pure `parse_plan(text, name) -> ChannelPlan` (`channel_plans/model.py`; `ValueError` on
+bad data). `channel_plans/__init__.py` has `available()` / `load(name)` which only read package resources
+(`importlib.resources`; the only file access in `coord/`; `FileNotFoundError` for an unknown name).
+- File format (MHz in the file, Hz `int` in code): `[plan] title`; `[[channels]]` rasters (`first`, `last`,
+  `centre_base_mhz`, `width_mhz`, optional `pmse`: channel N has centre `centre_base_mhz + width_mhz * N`);
+  `[[bands]]` annotations (`start_mhz`, `stop_mhz`, `pmse = "allowed" | "forbidden" | "info"`, `note`).
+- `ChannelPlan(name, title, channels, bands)`: `Channel(number, start_hz, stop_hz, pmse)` (+ `centre_hz`; edges are
+  `start <= f < stop`), `BandAnnotation`, `channel_at(freq_hz)`, `shaded_spans()` (runs of touching channels with
+  the same flag merged, then the bands; used by the overlay).
 
-`eu.toml` holds the DVB-T channels 21–48, plus annotations for 694–790, 823–832, 863–865 and 1785–1805.
+`eu.toml` holds the DVB-T channels 21–48 (centre `306 + 8·N` MHz, ch21 = 470–478; all `allowed`: TV white space,
+licence dependent), plus bands: 694–790 `forbidden` ("700 MHz mobile band (not for PMSE in NL)"), 790–823
+`forbidden`, 823–832 `allowed` ("Mic duplex gap (823-832 MHz)"), 832–862 `forbidden`, 863–865 `allowed`
+("Licence-free (863-865 MHz)"), 1785–1805 `info` ("PMSE 1785-1805 MHz (licence)"). The file carries a comment
+that legality must be verified against the current RDI / Agentschap Telecom rules.
 The solver skips `forbidden` bands unless `CoordinationRequest.allow_forbidden=True`. Plans that use them carry
 `Plan.warnings`, which every exporter must print. The app never hard-blocks.
 
