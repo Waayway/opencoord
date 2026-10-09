@@ -160,14 +160,19 @@ spacing = "generic-analog"   # preset name, or an inline [spacing] table
 - **Editor workflow:** "New profile" → pick a **template** (Generic analog mic, Generic IEM, Generic digital,
   Fixed-channel cheap set) → type tuning range(s) and step **or paste a channel list** → save.
   You can also clone or export/import profiles as files, which makes them easy to share.
-- **Spacing presets:**
-  - *Generic analog*: 350 kHz carrier spacing, 3rd-order 2Tx 100 kHz, 3Tx 50 kHz, 5th-order off
-  - *Conservative*: wider spacings, 5th-order on
-  - *IEM*: wider carrier spacing, stricter IMD
-  - *Digital*: tighter spacings
-  - *Custom*
-
-  These defaults must be reviewed; see open questions.
+- **Spacing is fully configurable** (decided 2026-10-09). There are no hard-coded values anywhere in the solver;
+  everything comes from data, at three levels:
+  1. **Spacing presets** are editable TOML files in `<config>/spacing/`. The app seeds them on first run:
+     *generic-analog*, *conservative*, *iem* and *digital*. Users can edit, clone, rename, delete, import and export
+     presets in a **Spacing editor** panel. "Reset to built-in" restores the shipped values.
+  2. **Per profile:** pick a preset, then optionally override individual values (carrier, 3rd-order 2Tx, 3rd-order
+     3Tx, 5th-order 2Tx, 7th-order 2Tx). Each value can be in kHz or 0 for disabled.
+  3. **Per coordination run:** an optional global override (e.g. "tight mode" scaling all spacings by a factor, or
+     forcing 5th order on).
+- **Resolution order:** run override → profile override → profile's preset. For a pair of different profiles the
+  **stricter** value of the two applies.
+- The results view shows **which rule and which value** blocked a candidate, so users can tune spacing from
+  experience.
 
 ### 5.2 IMD engine (`imd.py`)
 For a candidate set *F*: 2-tone 3rd order `2f1−f2`; 3-tone 3rd order `f1+f2−f3`; optional 2-tone 5th order
@@ -354,12 +359,12 @@ Each phase ends with passing tests, an updated implementation skill, and a commi
 - **Done when:** an exported scan round-trips and imports into WWB and WSM (verified manually).
 
 ### Phase 7: Coordination engine
-- [ ] `profiles.py` + TOML schema + templates + spacing presets
+- [ ] `profiles.py` + TOML schema + templates; `spacing.py` with editable preset files, seeding, and override resolution
 - [ ] `imd.py`, `solver.py` (candidates, scan-aware filtering, backtracking, locked carriers, check mode, backups)
 - **Done when:** property tests show no plan violates its rules, and a 16-device plan in 470–694 MHz solves in under 5 s.
 
 ### Phase 8: Coordination UI
-- [ ] Profile editor (templates, paste channel list, clone/import/export)
+- [ ] Profile editor (templates, paste channel list, clone/import/export) and Spacing editor (presets CRUD, reset to built-in)
 - [ ] Coordination panel, results on spectrum, plan exports (CSV/TXT/HTML)
 - **Done when:** the end-to-end flow (scan → add 10 amateur devices → coordinate → export) works on the real device.
 
@@ -379,8 +384,8 @@ wireless receivers (Shure/Sennheiser network protocols), mobile apps, manufactur
 
 ## 11. Open questions
 
-1. **Spacing defaults:** what spacings do your amateur devices actually tolerate? The presets in §5.1 are typical
-   generic values. Do you have measured figures, or a preferred source (e.g. a WWB "generic" profile)?
+1. ~~**Spacing defaults**~~: **Resolved:** fully configurable (editable presets + per-profile + per-run overrides,
+   §5.1). The seeded values are starting points only.
 2. **IMD orders:** is 3rd-order (2Tx + 3Tx) enough by default, with 5th as an option? Or should 5th be on by default
    for IEMs?
 3. **NL / EU band legality:**

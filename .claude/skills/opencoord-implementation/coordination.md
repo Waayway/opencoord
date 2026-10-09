@@ -18,9 +18,11 @@ im3_3tx = 50
 im5_2tx = 0
 ```
 - Templates: Generic analog mic, Generic IEM, Generic digital, Fixed-channel set.
-- Spacing presets: `generic-analog`, `conservative`, `iem`, `digital`. Defaults are **not final** (see plan open
-  questions 1–2).
-- When IMD rules differ between devices, compare the two devices' rules and use the stricter (larger) value.
+- Spacing is **data, never constants** (`coord/spacing.py`). Presets are TOML files in `<config>/spacing/`, seeded
+  from package defaults (`generic-analog`, `conservative`, `iem`, `digital`) on first run and editable in the UI.
+- Resolution: run override → profile `[spacing]` overrides → profile's `spacing` preset.
+  `SpacingRules.resolve(a, b)` returns the stricter value per rule for a device pair.
+- Every rejection records `(rule, required_khz, actual_khz, other_carrier)` so the UI can explain it.
 
 ## IMD math (`coord/imd.py`)
 Products for carriers `f`:
