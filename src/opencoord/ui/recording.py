@@ -246,6 +246,8 @@ class RecordingActions:
             if writer.error is not None:
                 self._fail_recording(writer, writer.error)
         finishing = self._finishing
+        if finishing is not None:
+            finishing.poll()  # keeps handing the last chunks and the finish request over
         if finishing is not None and finishing.done:
             self._finishing = None
             if finishing.error is not None:
@@ -474,6 +476,8 @@ class RecordingActions:
             if base != self._log_base or (base == "replay" and self._log_now is None):
                 engine.start(now)  # first sweep of this timebase starts the interval
                 self._log_base = base
+            elif base == "replay" and self._log_now is not None and now < self._log_now:
+                engine.restart(now)  # the replay was rewound: recorded time went backwards
             self._log_now = now if base == "replay" else self._log_now
             engine.set_threshold(self.effective_threshold())
             try:
@@ -505,6 +509,11 @@ class RecordingActions:
                 writer.path.name,
                 SHUTDOWN_WAIT_S,
                 rec.parts_dir_for(writer.path).name,
+            )
+        job = self._recover_job
+        if job is not None and not job.wait(SHUTDOWN_WAIT_S):
+            log.warning(
+                "recovering %s did not finish within %.0f s", job.parts.name, SHUTDOWN_WAIT_S
             )
         self._check_writers()
         self.disable_logger()

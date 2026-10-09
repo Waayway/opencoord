@@ -105,6 +105,7 @@ class RecordPanel:
     def _toggle_record(self) -> None:
         if self._a.recording:
             self._a.stop_recording()
+            dpg.set_value(TAG_REC_PATH, default_recording_name())  # the name is taken now
         else:
             self._a.start_recording(Path(str(dpg.get_value(TAG_REC_PATH)).strip() or "."))
             if self._a.recording:

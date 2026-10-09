@@ -264,12 +264,11 @@ def test_zip_bomb_guard(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None
         list(RecordingReader.open(path).sweeps())
 
 
-def test_close_is_atomic_and_idempotent(tmp_path: Path) -> None:
+def test_close_is_idempotent_and_leaves_no_temp_files(tmp_path: Path) -> None:
     target = tmp_path / "x.ocrec"
-    target.write_bytes(b"old")
     w = RecordingWriter(target, INFO, clock=FakeClock())
     w.append(sweep(1.0))
-    assert target.read_bytes() == b"old"  # untouched until closed
+    assert not target.exists()  # appears only when finished
     w.close()
     w.close()
     assert w.wait(5) and w.error is None and w.done
@@ -277,6 +276,30 @@ def test_close_is_atomic_and_idempotent(tmp_path: Path) -> None:
     assert not [p for p in tmp_path.iterdir() if p.name.endswith(".tmp")]
     with pytest.raises(RecordingError):
         w.append(sweep(2.0))
+
+
+def test_existing_recording_is_never_replaced(tmp_path: Path) -> None:
+    target = tmp_path / "x.ocrec"
+    target.write_bytes(b"old")
+    with pytest.raises(RecordingError, match="already exists"):
+        RecordingWriter(target, INFO, clock=FakeClock())
+    assert target.read_bytes() == b"old" and not (tmp_path / "x.ocrec.parts").exists()
+
+
+def test_debris_of_a_saved_recording_does_not_block_the_name(tmp_path: Path) -> None:
+    path = write(tmp_path / "d.ocrec", [sweep(1.0)])
+    parts = tmp_path / "d.ocrec.parts"
+    parts.mkdir()
+    (parts / "chunk_000000.npz").write_bytes(b"left over")  # rmtree was interrupted: no meta.json
+    with pytest.raises(RecordingError, match="already exists"):
+        RecordingWriter(path, INFO, clock=FakeClock())
+    assert not parts.exists()
+    assert not (tmp_path / "d.ocrec.parts").exists()
+
+
+def test_finishing_removes_meta_before_the_rest(tmp_path: Path) -> None:
+    write(tmp_path / "m.ocrec", [sweep(1.0)])
+    assert not (tmp_path / "m.ocrec.parts").exists()
 
 
 def test_the_caller_never_blocks_and_a_full_queue_keeps_buffering(
@@ -325,11 +348,12 @@ def test_time_flush_clock_starts_with_the_first_sweep(tmp_path: Path) -> None:
 
 
 def test_recover_does_not_replace_an_existing_recording(tmp_path: Path) -> None:
-    good = write(tmp_path / "r.ocrec", [sweep(1.0)])
     w = RecordingWriter(tmp_path / "r.ocrec", INFO, clock=FakeClock())
     for i in range(256):
         w.append(sweep(float(i)))
     assert w.wait_idle()
+    good = write(tmp_path / "other.ocrec", [sweep(1.0)])
+    shutil.copy(good, tmp_path / "r.ocrec")  # a good file took the name meanwhile
     parts = tmp_path / "r.ocrec.parts"
     job = recording.FinalizeJob(parts)
     deadline = time.monotonic() + 5
@@ -338,5 +362,5 @@ def test_recover_does_not_replace_an_existing_recording(tmp_path: Path) -> None:
         time.sleep(0.005)
     assert job.error is None and job.sweeps == 256
     assert job.path == tmp_path / "r-recovered.ocrec" and not parts.exists()
-    assert len(list(RecordingReader.open(good).sweeps())) == 1  # untouched
+    assert len(list(RecordingReader.open(tmp_path / "r.ocrec").sweeps())) == 1  # untouched
     assert len(list(RecordingReader.open(job.path).sweeps())) == 256

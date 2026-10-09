@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import threading
 import time
 from collections.abc import Callable, Iterator
 from pathlib import Path
@@ -12,6 +13,7 @@ import pytest
 from opencoord.core.types import Sweep
 from opencoord.device.link_api import Link
 from opencoord.device.simulator import SimulatedLink
+from opencoord.io import recording
 from opencoord.io.recording import RecordingInfo, RecordingReader, RecordingWriter
 from opencoord.ui.controller import Controller
 from opencoord.ui.recording import RecordingActions
@@ -419,7 +421,9 @@ def test_a_crashed_recording_can_be_recovered_from_the_app(
     assert target.exists() and not parts.exists()
     assert len(list(RecordingReader.open(target).sweeps())) == 256
     ctl.start()
-    assert actions.start_recording(target)  # the user can record again (name taken: replaced)
+    assert not actions.start_recording(target)  # the recovered file is never replaced
+    assert "already exists" in ctl.state.message
+    assert actions.start_recording(tmp_path / "again.ocrec")
     assert actions.stop_recording()
     finish(ctl, actions)
 
@@ -486,3 +490,61 @@ def test_logger_redirects_from_another_layout(
     assert actions.logger_status().path == tmp_path / "old-1.csv"
     actions.disable_logger()
     assert old.read_text().count("\n") == 1
+
+
+def test_a_finishing_writer_is_driven_by_ticks_alone(
+    ctl: Controller, actions: RecordingActions, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The writer is behind when stopped: leftover chunks and the finish request must still be
+    handed over by the controller's tick (no wait()/poll() by the test)."""
+    gate = threading.Event()
+    real = recording.write_atomic
+
+    def slow(path: Path, data: bytes) -> None:
+        if path.name.startswith("chunk"):
+            gate.wait(10)
+        real(path, data)
+
+    monkeypatch.setattr(recording, "write_atomic", slow)
+    connected(ctl)
+    assert actions.start_recording(tmp_path / "behind.ocrec")
+    writer = actions._writer
+    assert writer is not None
+    total = recording.CHUNK_SWEEPS * (recording.MAX_QUEUED_CHUNKS + 4)
+    for i in range(total):
+        writer.append(Sweep(600 * MHZ + np.arange(8) * 25_000.0, np.full(8, -90.0, np.float32), i))
+    assert actions.stop_recording()
+    gate.set()
+    run_until(ctl, lambda: not actions.finishing, timeout=10)
+    assert "Saved recording" in ctl.state.message
+    assert len(list(RecordingReader.open(tmp_path / "behind.ocrec").sweeps())) == total
+
+
+def test_logger_restarts_when_the_replay_is_rewound(
+    ctl: Controller, actions: RecordingActions, tmp_path: Path
+) -> None:
+    actions.open_replay(write_recording(tmp_path / "rw.ocrec", 30))
+    run_until(ctl, lambda: ctl.state.connection == "connected")
+    actions.set_replay_speed("Max")
+    actions.add_logger_range(600 * MHZ, 601 * MHZ)
+    actions.set_logger_threshold(-85.0)
+    assert actions.enable_logger(tmp_path / "rw.csv")
+    ctl.start()
+    run_until(ctl, lambda: not ctl.state.running)
+    assert actions._engine is not None and actions._alerts == 1
+    actions.restart_replay()
+    ctl.start()
+    run_until(ctl, lambda: not ctl.state.running)
+    assert actions._alerts == 2  # the second pass alerts again: time went back, debounce reset
+
+
+def test_shutdown_waits_for_a_recovery_in_progress(
+    ctl: Controller, actions: RecordingActions, tmp_path: Path
+) -> None:
+    connected(ctl)
+    target = tmp_path / "sd.ocrec"
+    stale_parts(target)
+    assert not actions.start_recording(target)
+    assert actions.recover()
+    ctl.shutdown()
+    assert target.exists() and not actions.finishing

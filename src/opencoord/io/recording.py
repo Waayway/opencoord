@@ -321,6 +321,11 @@ class RecordingWriter:
         self.path = path
         self._clock = clock
         self._parts = parts_dir_for(path)
+        if path.exists():
+            if self._parts.is_dir() and not (self._parts / META_NAME).exists():
+                # debris of this saved recording (its cleanup was interrupted)
+                shutil.rmtree(self._parts, ignore_errors=True)
+            raise RecordingError(f"{path.name} already exists; choose another name")
         if self._parts.exists() and any(self._parts.iterdir()):
             raise PartsExistError(self._parts)
         self._parts.mkdir(parents=True, exist_ok=True)
@@ -470,6 +475,9 @@ class FinalizeJob:
     def done(self) -> bool:
         return self._done.is_set()
 
+    def wait(self, timeout_s: float) -> bool:
+        return self._done.wait(timeout_s)
+
     def _run(self) -> None:
         try:
             self.sweeps = RecordingReader.open(self.parts).total_sweeps
@@ -497,6 +505,8 @@ def _zip_parts(parts: Path, target: Path) -> None:
     except BaseException:
         Path(tmp_name).unlink(missing_ok=True)
         raise
+    # meta.json goes first: a parts dir without it is leftover debris of a finished recording
+    (parts / META_NAME).unlink(missing_ok=True)
     shutil.rmtree(parts, ignore_errors=True)
 
 

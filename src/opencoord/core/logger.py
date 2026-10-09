@@ -86,6 +86,13 @@ class LoggerEngine:
         """Start the first interval at ``now``."""
         self._last_write = now
 
+    def restart(self, now: float) -> None:
+        """Forget the max hold and the alert debounce and start a new interval at ``now`` (used
+        when the time base jumps back, e.g. a replay was rewound)."""
+        self._max = [None] * len(self.ranges)
+        self._last_alert = [None] * len(self.ranges)
+        self._last_write = now
+
     def set_threshold(self, threshold_dbm: float | None) -> None:
         self.threshold_dbm = threshold_dbm
 

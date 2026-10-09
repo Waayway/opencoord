@@ -225,6 +225,8 @@ class ReplayLink:
         self._config: DeviceConfig | None = None
         self._capabilities: Capabilities | None = None
         self._ended = False
+        self._rewind_pending = False
+        self._want_paused = True
 
     # --- Link ---------------------------------------------------------------------------------
 
@@ -308,7 +310,9 @@ class ReplayLink:
     def position(self) -> float:
         """Fraction of the recording played, 0..1 (no lock: read every frame by the UI)."""
         scheduler = self._scheduler
-        return scheduler.position if scheduler else 0.0
+        if self._rewind_pending or scheduler is None:
+            return 0.0
+        return scheduler.position
 
     @property
     def total_sweeps(self) -> int:
@@ -316,6 +320,8 @@ class ReplayLink:
 
     @property
     def paused(self) -> bool:
+        if self._rewind_pending:
+            return self._want_paused
         return self._scheduler.paused if self._scheduler else True
 
     @property
@@ -328,7 +334,9 @@ class ReplayLink:
 
     def set_paused(self, paused: bool) -> None:
         with self._lock:
-            if self._scheduler is not None:
+            if self._rewind_pending:
+                self._want_paused = paused
+            elif self._scheduler is not None:
                 self._scheduler.set_paused(paused, self._clock())
         self._wake.set()
 
@@ -339,12 +347,16 @@ class ReplayLink:
         self._wake.set()
 
     def rewind(self) -> None:
-        """Start again from the first sweep (paused)."""
+        """Start again from the first sweep (paused unless :meth:`set_paused` follows).
+
+        The replay thread does the actual reset on its next :meth:`pump` (it alone decodes
+        chunks); until then the position reads 0 and the old queue content is already gone.
+        """
         with self._lock:
             if self._reader is None or self._scheduler is None:
                 return
-            self._feed = _ChunkFeed(self._reader)
-            self._scheduler.reset(self._feed, self._clock())
+            self._rewind_pending = True
+            self._want_paused = True
             self._ended = False
             while True:  # sweeps of the old position must not leak into the new run
                 try:
@@ -396,6 +408,8 @@ class ReplayLink:
 
     def pump(self) -> float:
         """Emit what is due now; returns how long to wait before calling again (seconds)."""
+        if self._rewind_pending:
+            self._apply_rewind()
         feed = self._feed
         if feed is not None:
             feed.prefetch()  # decode the next chunk outside the lock
@@ -423,6 +437,20 @@ class ReplayLink:
             if wait is None:
                 return _IDLE_WAIT_S
             return _BUSY_WAIT_S if len(due) >= min(_BATCH, free) else min(wait, _IDLE_WAIT_S)
+
+    def _apply_rewind(self) -> None:
+        """Replay thread only: a fresh feed (first chunk decoded here, not on the UI thread)."""
+        reader = self._reader
+        if reader is None:
+            return
+        feed = _ChunkFeed(reader)
+        feed.prefetch()
+        with self._lock:
+            if self._scheduler is not None and self._rewind_pending:
+                self._feed = feed
+                self._scheduler.reset(feed, self._clock())
+                self._scheduler.set_paused(self._want_paused, self._clock())
+                self._rewind_pending = False
 
     def _end(self, message: str) -> None:
         self._ended = True

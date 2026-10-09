@@ -172,3 +172,14 @@ def test_writer_never_mixes_layouts(tmp_path: Path) -> None:
 
 def lines_of(path: Path) -> list[str]:
     return path.read_text("utf-8").splitlines()
+
+
+def test_restart_forgets_the_interval_max_and_debounce() -> None:
+    e = engine(threshold_dbm=-75.0, interval_s=10.0)
+    assert len(e.feed(FREQS, levels(f475=-60.0), 100.0)) == 1
+    assert e.feed(FREQS, levels(f475=-60.0), 101.0) == []  # debounced
+    e.restart(5.0)  # the time base went back (a replay was rewound)
+    assert len(e.feed(FREQS, levels(f475=-60.0), 5.0)) == 1
+    assert not e.due(14.9) and e.due(15.0)
+    (row,) = e.take_rows(15.0, "T")
+    assert row.max_dbm == pytest.approx(-60.0)
