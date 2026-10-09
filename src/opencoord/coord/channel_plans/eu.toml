@@ -1,0 +1,57 @@
+# Channel plan: Europe / Netherlands, UHF TV band as used for wireless microphones (PMSE).
+#
+# WARNING: the legality flags below are best effort. Verify them against the CURRENT rules of the
+# Dutch regulator (RDI / Agentschap Telecom) and your licence before relying on them. The app never
+# blocks you; it only colours bands and warns.
+#
+# Frequencies are MHz. DVB-T raster: channel N has centre 306 + 8 * N MHz (channel 21 is
+# 470-478 MHz, centre 474 MHz). Channels 21-48 (470-694 MHz) are TV white space: PMSE is
+# allowed there subject to licence and local TV occupancy, hence "allowed".
+
+[plan]
+title = "Europe / Netherlands (DVB-T UHF, PMSE)"
+
+[[channels]]
+first = 21
+last = 48
+centre_base_mhz = 306
+width_mhz = 8
+pmse = "allowed"
+
+# 700 MHz mobile band, including its guard and duplex gaps (694-703, 733-758, 788-791):
+# the whole 694-790 MHz range is treated as not available for PMSE.
+[[bands]]
+start_mhz = 694
+stop_mhz = 790
+pmse = "forbidden"
+note = "700 MHz mobile band (not for PMSE in NL)"
+
+[[bands]]
+start_mhz = 790
+stop_mhz = 823
+pmse = "forbidden"
+note = "800 MHz mobile band (LTE downlink)"
+
+[[bands]]
+start_mhz = 823
+stop_mhz = 832
+pmse = "allowed"
+note = "Mic duplex gap (823-832 MHz)"
+
+[[bands]]
+start_mhz = 832
+stop_mhz = 862
+pmse = "forbidden"
+note = "800 MHz mobile band (LTE uplink)"
+
+[[bands]]
+start_mhz = 863
+stop_mhz = 865
+pmse = "allowed"
+note = "Licence-free (863-865 MHz)"
+
+[[bands]]
+start_mhz = 1785
+stop_mhz = 1805
+pmse = "info"
+note = "PMSE 1785-1805 MHz (licence)"
