@@ -6,18 +6,16 @@ behaves like the real link (same ``Link`` interface, ~10 sweeps per second).
 
 from __future__ import annotations
 
-import contextlib
 import queue
 import threading
 import time
-from typing import TypeVar
 
 import numpy as np
 import numpy.typing as npt
 
 from opencoord.core.types import DeviceConfig, ModelInfo, Sweep
 from opencoord.device import models
-from opencoord.device.link_api import LinkEvent
+from opencoord.device.link_api import LinkEvent, put_drop_oldest
 from opencoord.device.models import Capabilities
 from opencoord.device.protocol import make_sweep
 
@@ -43,7 +41,6 @@ _CARRIER_HALF_WIDTH_HZ = 150_000.0
 _NOISE_JITTER_DB = 1.5
 _DEFAULT_POINTS = 112
 _QUEUE_SIZE = 64
-_T = TypeVar("_T")
 
 
 def _dvbt_centre_hz(channel: int) -> int:
@@ -82,16 +79,6 @@ def generate(
         power += 10.0 ** (peak / 10.0) * np.exp(-0.5 * x * x * 4.0)
 
     return (10.0 * np.log10(power)).astype(np.float32)
-
-
-def _queue_put_drop_oldest(q: queue.Queue[_T], item: _T) -> None:
-    while True:
-        try:
-            q.put_nowait(item)
-            return
-        except queue.Full:
-            with contextlib.suppress(queue.Empty):
-                q.get_nowait()
 
 
 class SimulatedLink:
@@ -155,9 +142,9 @@ class SimulatedLink:
             self._thread.join(timeout=2.0)
             if not self._thread.is_alive():
                 self._thread = None
-            _queue_put_drop_oldest(self.events, LinkEvent("error", message))
+            put_drop_oldest(self.events, LinkEvent("error", message))
             raise ConnectionError(message)
-        _queue_put_drop_oldest(
+        put_drop_oldest(
             self.events, LinkEvent("connected", "Simulated RF Explorer WSUB1G+ connected")
         )
 
@@ -170,7 +157,7 @@ class SimulatedLink:
         if thread.is_alive():  # still running: stay "open" rather than lie
             return
         self._thread = None
-        _queue_put_drop_oldest(self.events, LinkEvent("disconnected", "Simulator closed"))
+        put_drop_oldest(self.events, LinkEvent("disconnected", "Simulator closed"))
 
     def set_span(self, start_hz: int, stop_hz: int) -> None:
         if stop_hz <= start_hz:
@@ -196,9 +183,7 @@ class SimulatedLink:
     def switch_module(self, main: bool) -> None:
         if main:
             return
-        _queue_put_drop_oldest(
-            self.events, LinkEvent("error", "This device has no expansion module")
-        )
+        put_drop_oldest(self.events, LinkEvent("error", "This device has no expansion module"))
 
     def _make_config(self, start_hz: int, stop_hz: int) -> DeviceConfig:
         hint = models.MODELS[10]
@@ -244,7 +229,7 @@ class SimulatedLink:
                 samples = generate(
                     config.start_hz, config.stop_hz, config.sweep_points, now, self._seed
                 )
-                _queue_put_drop_oldest(self.sweeps, make_sweep(config, samples, time.time()))
+                put_drop_oldest(self.sweeps, make_sweep(config, samples, time.time()))
             self._stop.wait(self._interval)
 
 

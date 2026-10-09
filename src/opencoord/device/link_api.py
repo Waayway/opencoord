@@ -2,12 +2,26 @@
 
 from __future__ import annotations
 
+import contextlib
 import queue
 from dataclasses import dataclass
-from typing import Literal, Protocol
+from typing import Literal, Protocol, TypeVar
 
 from opencoord.core.types import DeviceConfig, ModelInfo, Sweep
 from opencoord.device.models import Capabilities
+
+_T = TypeVar("_T")
+
+
+def put_drop_oldest(q: queue.Queue[_T], item: _T) -> None:
+    """Put ``item`` without blocking, dropping the oldest items while the queue is full."""
+    while True:
+        try:
+            q.put_nowait(item)
+            return
+        except queue.Full:
+            with contextlib.suppress(queue.Empty):
+                q.get_nowait()
 
 
 @dataclass(frozen=True)

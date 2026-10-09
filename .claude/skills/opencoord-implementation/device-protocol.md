@@ -32,7 +32,8 @@ each with a `.json` sidecar):
 - `set_sweep_points(n)`: multiples of 16 up to 4096 → `CJ` + byte `(n-16)/16` (F2: `0x1f` → 512; `0x06` → 112
   restored the device); otherwise 112..65535 → `Cj` + big-endian u16 (verified ad hoc: `Cj 0x0400` → 1024 points,
   `$z` frames, not kept as a fixture).
-- `hold()` → `#\x04CH` ⚠ not yet sent to hardware.
+- `hold()` → `#\x04CH`: stops the sweep dump (verified ad hoc on the WSUB1G+, the dump ends with EEOT); a
+  `set_config` sent while held resumes sweeping (verified ad hoc), so `set_span` needs no extra `C0`.
 - `switch_module(main)` → `#\x05CM\x00` / `#\x05CM\x01` (binary byte per spec) ⚠ needs a unit with an expansion.
 - Builders raise `ValueError` on out-of-range input; never sent: reboot, shutdown, baud change, calibration.
 
@@ -102,9 +103,34 @@ each with a `.json` sidecar):
   intermittent carrier.
 - Deterministic with a seed (for tests). Selected with `opencoord --simulator`.
 
+## Serial link (`src/opencoord/device/link.py`)
+- `SerialLink(port=None, *, serial_factory=open_serial, port_lister=list_serial_ports, baud_rates=(500000, 2400),
+  command_timeout_s=1.0, reconnect_delay_s=0.5, reconnect_max_delay_s=5.0, stall_timeout_s=10.0, platform=sys.platform)`
+  implements `Link`. `SerialLike`/`PortInfoLike` Protocols describe the bits of pyserial it uses; tests inject a
+  `FakeSerial` that replays F1 and echoes `C2-F` like F3 (`tests/device/test_link.py`).
+- `find_ports(lister) -> list[SerialPort(device, description, is_rf_explorer)]`, `10c4:ea60` first (for a port picker).
+  Auto-connect (no `port`) only probes `10c4:ea60` ports, so unrelated serial devices never get `C0` written to them.
+- `open(timeout_s=5.0)`: the 5 s budget is shared over all port × baud attempts. Per attempt: open the port
+  (`exclusive=True` so a busy port fails on POSIX), write `C0`, read until `#C2-M` then `#C2-F`; resend `C0` once at
+  half the budget (busy device). Events after the config are handed to the worker. Opening takes ~150 ms on hardware.
+- Worker thread owns the port after `open()`: writes queued commands one at a time; `set_config` waits for any
+  `#C2-F` (timeout `command_timeout_s`, one resend, then an `error` event and the next command); `hold`/`switch_module`
+  do not wait. Sweeps become `Sweep` via `make_sweep` only if their count matches the current config.
+- Reconnect: a read/write `OSError` (pyserial's `SerialException` is one) or no data for `stall_timeout_s` while not
+  held → close, `disconnected` event, retry `_connect` with `backoff_delays(0.5, 5.0)` (0.5, 1, 2, 4, 5, 5 …),
+  re-discovering the port when none was given, then `connected`. Queued commands survive a reconnect.
+- `set_span` clamps like the simulator (min span `max(points-1, 1000)` Hz because `C2-F` is in whole kHz) and keeps
+  the device's current amplitude top/bottom.
+- Hardware test `tests/device/test_link_hardware.py` (`OPENCOORD_HARDWARE=1`, optional `OPENCOORD_PORT`): model +
+  3 sweeps, `set_span(470, 700 MHz)`, 3 sweeps in range, then restores the original span.
+
 ## Errors
-Each error maps to a user message with OS-specific help:
-- **Permission denied:** Linux `uucp`/`dialout` group or the udev rule
-- **Port busy:** close RF Explorer for Windows / other apps
-- **No device:** CP210x driver links for Windows/macOS
-- **Unplug:** auto-reconnect with backoff
+`classify_error(exc, platform) -> "permission" | "busy" | "not_found" | "other"` (by errno on POSIX, by the
+`WinError` text on Windows, where "Access is denied" means the port is busy) and
+`user_message(kind, port, platform, detail="")` (kinds above plus `"no_reply"`) are pure and unit-tested:
+- **Permission denied:** Linux `dialout` (Debian/Ubuntu/Fedora) / `uucp` (Arch) group or the udev rule
+  `99-opencoord-rfexplorer.rules`
+- **Port busy:** close RF Explorer for Windows / Touchstone / Wireless Workbench / other serial tools
+- **No device:** CP210x driver link (silabs.com) on Windows/macOS; `dmesg` hint on Linux
+- **No reply:** tried 500000 and 2400 baud; switch it on, leave the device menu
+- **Unplug:** `disconnected` event, auto-reconnect with backoff, `connected` event

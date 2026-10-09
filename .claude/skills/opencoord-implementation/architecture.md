@@ -8,7 +8,7 @@ src/opencoord/
   device/
     protocol.py      pure: command builders + incremental byte parser → events (SweepData, ConfigReply, ModelReply, Unknown, ParseError); make_sweep()
     models.py        pure: model code → Capabilities (name, min/max Hz, max span, sweep-point limits, plus/expansion)
-    link.py          SerialLink thread: discover, open, baud detect, request config, stream, reconnect
+    link.py          SerialLink thread: discover, open, baud detect, request config, stream, reconnect (done)
     scanner.py       SegmentedScanner: drives a link (or simulator) across segments, stitches traces
     link_api.py      Link Protocol + LinkEvent(kind, message) (done)
     simulator.py     SimulatedLink + pure generate(): same interface as SerialLink, synthetic spectra (done)
@@ -27,7 +27,8 @@ src/opencoord/
   ui/
     app.py, spectrum.py, waterfall.py, theme.py, shortcuts.py, panels/*.py
 ```
-Implemented so far: `__init__.py` (`__version__`), `__main__.py`, `cli.py`, `ui/app.py`; the rest of the tree
+Implemented so far: `__init__.py` (`__version__`), `__main__.py`, `cli.py`, `ui/app.py`, `core/types.py`,
+`device/{protocol,models,link_api,simulator,link}.py`; the rest of the tree
 is still to be written. `io/` is deliberately named like the stdlib module; all imports are absolute so it is safe.
 
 The project uses the `src/` layout so tests always run against the installed package.
