@@ -13,8 +13,9 @@ shows the spectrum (live, max-hold, waterfall, markers, TV channel overlay), exp
 - This skill: source of truth for *how* it is built. **Keep it in sync.** Any commit that changes an implementation
   detail described here updates the relevant file in the same commit.
 
-> Status: the project is in the planning phase. Sections marked **(planned)** describe decided designs that are not
-> yet in code. When implementing them, replace "(planned)" with what was actually built, including file paths.
+> Status: all v0.1 features are implemented; the release is waiting for the maintainer to bump the version and tag.
+> Any section still marked **(planned)** describes a decided design that is not yet in code. When implementing it,
+> replace "(planned)" with what was actually built, including file paths.
 
 ## Golden rules
 1. **Layering:** `device/protocol.py`, `device/models.py`, `core/traces.py` and all of `coord/` are **pure**: no
@@ -36,6 +37,7 @@ shows the spectrum (live, max-hold, waterfall, markers, TV channel overlay), exp
 | `architecture.md` | package layout, data flow, threading, sessions, settings paths |
 | `device-protocol.md` | RF Explorer serial protocol, model table, link/reconnect, segmented scanning, simulator |
 | `coordination.md` | device profiles (TOML), spacing presets, IMD math, solver algorithm, channel plans |
+| `io-formats.md` | sessions (`.opencoord`), CSV/PNG exporters, importers, WWB / WSM / RF Explorer format research with confidence levels |
 | `ui.md` | Dear PyGui structure, plots, waterfall texture, shortcuts, theme |
 | `tooling-and-packaging.md` | uv, ruff/mypy/pytest, Nix flake, Docker stages, PyInstaller + per-OS packaging, GitHub Actions |
 | `conventions.md` | code style, naming, testing patterns, fixtures, commits, how to update this skill |

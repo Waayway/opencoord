@@ -1,0 +1,48 @@
+name: Device profile
+description: Request or share a profile for a wireless mic, IEM or other transmitter
+labels: ["profile"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Profiles tell the coordinator which frequencies a device can use and which spacing rules apply.
+        See [profiles/README.md](https://github.com/Waayway/opencoord/blob/main/profiles/README.md) for the file format.
+        Pull requests that add a `.toml` file to `profiles/` are welcome too.
+  - type: input
+    id: device
+    attributes:
+      label: Device (manufacturer, model, band/version)
+    validations:
+      required: true
+  - type: dropdown
+    id: kind
+    attributes:
+      label: Kind
+      options: [Wireless microphone, IEM (in-ear monitor), Intercom / other]
+    validations:
+      required: true
+  - type: textarea
+    id: frequencies
+    attributes:
+      label: Tuning range and step, or the channel list / banks
+      description: "In MHz, for example `470-510 MHz in 25 kHz steps` or the list of fixed channels per group."
+    validations:
+      required: true
+  - type: textarea
+    id: spacing
+    attributes:
+      label: Spacing requirements
+      description: Minimum carrier spacing, intermod spacing, or the manufacturer's recommendation, if known.
+  - type: input
+    id: source
+    attributes:
+      label: Source
+      description: Link to the manual or data sheet, or say if you measured it yourself.
+    validations:
+      required: true
+  - type: textarea
+    id: toml
+    attributes:
+      label: Profile TOML (optional)
+      description: Paste a profile you already made in OpenCoord (Profiles tab, Export).
+      render: toml

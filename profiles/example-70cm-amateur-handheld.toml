@@ -1,0 +1,12 @@
+# Example community profile: a simple amateur-radio style handheld, tunable in 12.5 kHz steps.
+# Copy this file, edit it, and import it from the Profiles tab (or drop it into your profile folder).
+[profile]
+name = "Example 70 cm FM handheld"
+kind = "other"
+tuning = [[430.0, 440.0]]
+step_khz = 12.5
+spacing = "conservative"
+
+[spacing]
+# Optional per-profile overrides of the spacing preset, in kHz (0 disables a rule).
+im3_2tx = 150

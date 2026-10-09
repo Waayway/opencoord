@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- OpenCoord app icon: stylised spectrum with three carrier peaks. GPL-3.0-or-later. -->
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#1d2b3a"/>
+      <stop offset="1" stop-color="#0d141c"/>
+    </linearGradient>
+    <linearGradient id="fill" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#3ee0b0" stop-opacity="0.55"/>
+      <stop offset="1" stop-color="#3ee0b0" stop-opacity="0.05"/>
+    </linearGradient>
+  </defs>
+  <rect x="8" y="8" width="240" height="240" rx="48" fill="url(#bg)"/>
+  <g stroke="#2f4256" stroke-width="3">
+    <line x1="40" y1="88" x2="216" y2="88"/>
+    <line x1="40" y1="136" x2="216" y2="136"/>
+    <line x1="40" y1="184" x2="216" y2="184"/>
+  </g>
+  <path d="M32 196 L58 192 L72 186 L82 120 L92 186 L112 190 L124 178 L134 52 L144 178 L158 190 L176 184 L186 104 L196 184 L210 192 L224 196 L224 216 L32 216 Z"
+        fill="url(#fill)"/>
+  <path d="M32 196 L58 192 L72 186 L82 120 L92 186 L112 190 L124 178 L134 52 L144 178 L158 190 L176 184 L186 104 L196 184 L210 192 L224 196"
+        fill="none" stroke="#3ee0b0" stroke-width="8" stroke-linejoin="round" stroke-linecap="round"/>
+  <circle cx="134" cy="52" r="9" fill="#ffb347"/>
+</svg>

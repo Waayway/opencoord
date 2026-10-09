@@ -1,0 +1,12 @@
+[profile]
+name = "Fixed-channel set"
+kind = "mic"
+spacing = "generic-analog"
+
+[[groups]]
+name = "A"
+channels = [863.125, 863.625, 864.125, 864.625]
+
+[[groups]]
+name = "B"
+channels = [863.375, 863.875, 864.375, 864.875]

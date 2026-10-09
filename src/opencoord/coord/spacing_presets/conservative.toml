@@ -1,0 +1,13 @@
+# Starting point only: these values are user-configurable (edit in the Spacing editor or this file).
+# All values are kHz; 0 disables a rule.
+[preset]
+name = "conservative"
+description = "Wider spacing for crowded or critical shows"
+
+[spacing]
+carrier = 400
+im3_2tx = 150
+im3_3tx = 75
+im5_2tx = 75
+im7_2tx = 75
+im5_3tx = 0

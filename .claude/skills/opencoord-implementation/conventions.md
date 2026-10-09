@@ -13,8 +13,13 @@
 - Hardware tests use `@pytest.mark.hardware` and are skipped unless `OPENCOORD_HARDWARE=1` (and optional
   `OPENCOORD_PORT`) is set.
 - Fixtures: raw byte captures from the real device in `tests/fixtures/*.bin`, recorded with
-  `opencoord-cli record --raw`, each with a sidecar `.json` describing the model and settings.
-- UI smoke test marked `@pytest.mark.ui`; CI runs it under `xvfb-run` on Linux.
+  `opencoord-cli record --raw`, each with a sidecar `.json` describing the model and settings. (The first three,
+  `wsub1gplus_*.bin`, predate `record` and were captured with a throwaway pyserial script.)
+  `record` taps `SerialLink(raw_sink=...)` (every chunk the reader thread reads, handshake included, host writes
+  not included) and writes `<name>.json` next to the `.bin`; it needs a real device (not `--simulator`).
+- CLI exit codes: 0 ok, 1 device/connection error, 2 usage. `cli.main(argv, serial_factory=, port_lister=)` is injectable.
+- UI smoke test marked `@pytest.mark.ui`; CI runs it under `xvfb-run` on Linux. UI logic is tested without a
+  display through `ui/controller.py` against `SimulatedLink`; keep Dear PyGui calls out of the controller.
 
 ## Git
 - Conventional-ish messages (`device: parse $z sweeps`, `ci: add nix workflow`).

@@ -1,0 +1,6 @@
+[profile]
+name = "Generic digital"
+kind = "mic"
+tuning = [[470.0, 510.0]]
+step_khz = 25
+spacing = "digital"

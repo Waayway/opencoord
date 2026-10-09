@@ -1,0 +1,76 @@
+[project]
+name = "opencoord"
+version = "0.1.0.dev0"
+description = "RF Explorer spectrum scanner and wireless microphone / IEM frequency coordinator"
+readme = "README.md"
+license = "GPL-3.0-or-later"
+license-files = ["LICENSE"]
+requires-python = ">=3.11"
+classifiers = [
+    "Development Status :: 2 - Pre-Alpha",
+    "Environment :: X11 Applications",
+    "Intended Audience :: End Users/Desktop",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Scientific/Engineering",
+]
+dependencies = [
+    "dearpygui>=2.3.1",
+    "numpy>=2.4.6",
+    "platformdirs>=4.12.4",
+    "pyserial>=3.5",
+    "tomli-w>=1.2.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/Waayway/opencoord"
+
+[project.scripts]
+opencoord = "opencoord.ui.app:main"
+opencoord-cli = "opencoord.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/opencoord"]
+
+[dependency-groups]
+dev = [
+    "hypothesis>=6.168.5",
+    "mypy>=2.4.0",
+    "pyinstaller>=6.22.3",
+    "pytest>=9.1.1",
+    "ruff>=0.16.10",
+]
+
+[tool.ruff]
+line-length = 100
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "SIM", "C4", "RUF"]
+
+[tool.ruff.lint.flake8-tidy-imports]
+ban-relative-imports = "all"
+
+[tool.mypy]
+python_version = "3.11"
+warn_unused_configs = true
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["opencoord.device.*", "opencoord.core.*", "opencoord.coord.*"]
+strict = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "hardware: needs a real RF Explorer (set OPENCOORD_HARDWARE=1)",
+    "ui: needs a display (Dear PyGui window)",
+]

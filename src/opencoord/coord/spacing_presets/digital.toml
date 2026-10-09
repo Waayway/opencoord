@@ -1,0 +1,13 @@
+# Starting point only: these values are user-configurable (edit in the Spacing editor or this file).
+# All values are kHz; 0 disables a rule.
+[preset]
+name = "digital"
+description = "Digital wireless systems"
+
+[spacing]
+carrier = 200
+im3_2tx = 50
+im3_3tx = 25
+im5_2tx = 25
+im7_2tx = 25
+im5_3tx = 0

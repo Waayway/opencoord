@@ -1,0 +1,5 @@
+# OpenCoord: give the logged-in user access to RF Explorer spectrum analyzers.
+# RF Explorer uses a Silicon Labs CP210x USB-to-UART bridge (10c4:ea60).
+# Install to /etc/udev/rules.d/ (or lib/udev/rules.d/), then run:
+#   sudo udevadm control --reload-rules && sudo udevadm trigger
+SUBSYSTEM=="tty", ATTRS{idVendor}=="10c4", ATTRS{idProduct}=="ea60", MODE="0660", TAG+="uaccess"

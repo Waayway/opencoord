@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=OpenCoord
+GenericName=Spectrum Scanner and Frequency Coordinator
+Comment=RF Explorer spectrum scanner and wireless microphone / IEM frequency coordinator
+Exec=opencoord
+Icon=opencoord
+Terminal=false
+Categories=Science;Electronics;Engineering;
+Keywords=RF;spectrum;scanner;wireless;microphone;IEM;intermodulation;coordination;

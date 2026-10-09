@@ -1,0 +1,6 @@
+[profile]
+name = "Generic analog mic"
+kind = "mic"
+tuning = [[823.0, 832.0]]
+step_khz = 25
+spacing = "generic-analog"

@@ -1,0 +1,46 @@
+name: Bug report
+description: Something does not work as expected
+labels: ["bug"]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: What did you do, what did you expect, what happened instead?
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: Does it also happen with `--simulator`? That makes it much easier to reproduce.
+  - type: input
+    id: version
+    attributes:
+      label: OpenCoord version
+      description: "Output of `opencoord --version`, or the release you installed."
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options: [Windows, macOS, Linux, Other]
+    validations:
+      required: true
+  - type: dropdown
+    id: install
+    attributes:
+      label: How did you install it?
+      options: [Windows installer, macOS DMG, AppImage, Nix, Docker, From source, Other]
+  - type: input
+    id: device
+    attributes:
+      label: RF Explorer model and firmware
+      description: "Output of `opencoord-cli info`, or write 'none / simulator'."
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs and screenshots
+      description: "Run with `opencoord -v` from a terminal and paste the output. Attach a screenshot if it is a display problem."
+      render: shell
