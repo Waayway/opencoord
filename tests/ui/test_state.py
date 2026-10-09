@@ -95,3 +95,11 @@ def test_history_counters_for_incremental_views() -> None:
     assert h.generation == g + 1 and h.pushes == 2
     h.set_depth(5)
     assert h.generation == g + 2
+
+
+def test_degenerate_range_fills_with_the_max() -> None:
+    freqs = np.array([600e6])
+    out = resample_max(freqs, np.array([-70.0], dtype=np.float32), 600e6, 600e6, 4)
+    assert out.tolist() == [-70.0] * 4
+    empty = resample_max(np.array([]), np.array([], dtype=np.float32), 1.0, 1.0, 2)
+    assert np.isnan(empty).all()

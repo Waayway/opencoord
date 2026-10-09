@@ -54,8 +54,11 @@ UI "Coordinate" ──▶ worker thread: solver.solve(profiles, trace, exclusion
   `reset_max_hold`, `set_waterfall_depth`, `set_auto_connect`) and render `controller.state` (`ui/state.py`
   `AppState`); the frame loop calls `tick()` once per frame. Unit-tested against `SimulatedLink` without DPG
   (`tests/ui/test_controller.py`).
-- `open()`/`close()` run on worker threads (they block up to 5 s); results come back through a queue drained by
-  `tick()`. `startup()` lists ports and connects only the simulator, or `last_port` when `auto_connect` is on
+- `open()`/`close()` run on worker threads (they block up to 5 s); results (`_Opened`/`_OpenFailed`/`_Closed`)
+  come back through a queue drained by `tick()`. Serial ports open `exclusive=True`, so after `disconnect()` the
+  state is `disconnecting` and `connect()` is refused until every old link has reported `_Closed`, including a
+  connect abandoned mid-`open()` (closed as soon as its `open()` returns). `shutdown()` sets a flag so a late
+  successful `open()` closes its own link, closes the current link and joins close threads (3 s max). `startup()` lists ports and connects only the simulator, or `last_port` when `auto_connect` is on
   (default off): it never probes ports on its own.
 - **Live:** `set_span(range)` (device clamps); sweeps are dropped until `link.config` is a new object (the retune is
   confirmed; after 3 s the current config is accepted), then only sweeps matching the config axis are folded into
@@ -75,7 +78,8 @@ UI "Coordinate" ──▶ worker thread: solver.solve(profiles, trace, exclusion
 ## Persistence
 - User data dir (`platformdirs.user_config_dir("opencoord")`): `settings.toml`, `profiles/*.toml`, `presets.toml`.
 - `core/settings.py` `AppSettings` keys: `last_port`, `auto_connect` (false), `preset` (`""` = custom range),
-  `resolution`, `start_hz`/`stop_hz`, `window_width`/`window_height`, `waterfall_depth` (300), `mode`
-  (`live`/`scan`). `load()` ignores unknown keys and replaces invalid values by defaults (logged); a corrupt file
-  gives defaults. `save()` writes atomically (tmp + replace). The app loads on start and saves on exit.
+  `resolution`, `start_hz`/`stop_hz`, `window_width`/`window_height`, `waterfall_depth` (300, limits
+  `WATERFALL_DEPTH_MIN`/`MAX` = 10/1000 shared with the controller and scan panel), `mode` (`live`/`scan`).
+  `load()` ignores unknown keys and replaces invalid values by defaults (logged); an unreadable file (OS error,
+  bad TOML, invalid UTF-8) gives defaults. `save()` writes atomically (tmp + replace). The app loads on start and saves on exit.
 - Sessions are user-chosen files: `.opencoord` = zip with `session.json` (schema-versioned) + `traces.npz`.

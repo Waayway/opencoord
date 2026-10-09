@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import dearpygui.dearpygui as dpg
 
+from opencoord.core.settings import WATERFALL_DEPTH_MAX, WATERFALL_DEPTH_MIN
 from opencoord.device.scanner import PRESETS, Resolution
 from opencoord.ui import shortcuts, theme
 from opencoord.ui.controller import Controller
@@ -131,8 +132,8 @@ class ScanPanel:
             tag=TAG_DEPTH,
             label="Waterfall rows",
             default_value=c.state.waterfall.depth,
-            min_value=10,
-            max_value=2000,
+            min_value=WATERFALL_DEPTH_MIN,
+            max_value=WATERFALL_DEPTH_MAX,
             min_clamped=True,
             max_clamped=True,
             on_enter=True,

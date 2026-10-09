@@ -87,6 +87,7 @@ def status_line(state: AppState) -> str:
         "connecting": "Connecting",
         "connected": "Connected",
         "reconnecting": "Reconnecting",
+        "disconnecting": "Disconnecting",
     }[state.connection]
     parts = [conn]
     if state.simulator:

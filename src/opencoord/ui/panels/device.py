@@ -36,6 +36,7 @@ def connect_label(state: AppState) -> str:
         "connecting": "Connecting...",
         "connected": "Disconnect",
         "reconnecting": "Disconnect",
+        "disconnecting": "Disconnecting...",
     }[state.connection]
 
 
@@ -46,6 +47,7 @@ def info_lines(state: AppState) -> dict[str, str]:
         "connecting": "Connecting...",
         "connected": "Connected" + (f" to {state.port}" if state.port else ""),
         "reconnecting": "Connection lost, reconnecting...",
+        "disconnecting": "Disconnecting (closing the port)...",
     }[state.connection]
     lines = dict.fromkeys(_INFO, "")
     lines["status"] = f"Status: {status}"
@@ -117,7 +119,7 @@ class DevicePanel:
     def connect_or_disconnect(self) -> None:
         if self._c.state.connection == "disconnected":
             self._c.connect(self.selected_port())
-        elif self._c.state.connection != "connecting":
+        elif self._c.state.connection not in ("connecting", "disconnecting"):
             self._c.disconnect()
 
     def update(self, state: AppState) -> None:
@@ -134,7 +136,7 @@ class DevicePanel:
             if dpg.get_value(PORT_CHOICE) not in items:
                 rfe = [label for label, port in items.items() if port and "(RF Explorer)" in label]
                 dpg.set_value(PORT_CHOICE, rfe[0] if rfe else labels[0])
-        busy = state.connection == "connecting"
+        busy = state.connection in ("connecting", "disconnecting")
         for tag in (TAG_CONNECT, "toolbar.connect"):
             if dpg.does_item_exist(tag):
                 dpg.configure_item(tag, label=connect_label(state), enabled=not busy)

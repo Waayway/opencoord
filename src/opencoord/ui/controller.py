@@ -29,7 +29,7 @@ from dataclasses import dataclass, replace
 
 from opencoord.core import presets
 from opencoord.core.presets import RangePreset
-from opencoord.core.settings import AppSettings
+from opencoord.core.settings import WATERFALL_DEPTH_MAX, WATERFALL_DEPTH_MIN, AppSettings
 from opencoord.core.types import DeviceConfig, Sweep
 from opencoord.device.link import SerialPort, find_ports
 from opencoord.device.link_api import Link
@@ -58,6 +58,17 @@ class _OpenFailed:
     message: str
 
 
+@dataclass(frozen=True)
+class _Closed:
+    link: Link
+
+
+_Result = _Opened | _OpenFailed | _Closed
+#: How long ``shutdown()`` waits for background closes still running.
+_SHUTDOWN_JOIN_S = 3.0
+_DISCONNECTING = "Disconnecting..."
+
+
 def _mhz(hz: float) -> str:
     return f"{hz / _MHZ:.3f}"
 
@@ -79,7 +90,13 @@ class Controller:
         self._clock = clock
         self._link: Link | None = None
         self._connecting: Link | None = None
-        self._results: queue.Queue[_Opened | _OpenFailed] = queue.Queue()
+        #: Links that may still hold their port: being closed, or abandoned while opening (closed
+        #: as soon as their open() returns). No new connect starts until this is empty, because
+        #: serial ports are opened exclusively.
+        self._closing: set[Link] = set()
+        self._close_threads: list[threading.Thread] = []
+        self._shutting_down = threading.Event()
+        self._results: queue.Queue[_Result] = queue.Queue()
         self._scanner: SegmentedScanner | None = None
         self._live_awaiting: DeviceConfig | None = None
         self._live_requested_at = 0.0
@@ -88,7 +105,8 @@ class Controller:
         self._rate_count = 0
         self._rate_since = clock()
 
-        st = AppState(simulator=simulator, waterfall=WaterfallHistory(s.waterfall_depth))
+        depth = min(max(s.waterfall_depth, WATERFALL_DEPTH_MIN), WATERFALL_DEPTH_MAX)
+        st = AppState(simulator=simulator, waterfall=WaterfallHistory(depth))
         st.auto_connect = s.auto_connect
         st.mode = "scan" if s.mode == "scan" else "live"
         st.resolution = Resolution(s.resolution)
@@ -149,6 +167,9 @@ class Controller:
     def connect(self, port: str | None = None) -> None:
         """Open a link to ``port`` (``None`` = auto-detect) on a worker thread."""
         st = self.state
+        if self._closing:
+            self._say("Waiting for the previous connection to close...")
+            return
         if st.connection != "disconnected":
             return
         link = self._factory(port)
@@ -167,25 +188,42 @@ class Controller:
             link.open()
         except Exception as exc:  # ConnectionError carries the user-facing message
             self._results.put(_OpenFailed(link, str(exc) or type(exc).__name__))
-        else:
-            self._results.put(_Opened(link))
+            return
+        if self._shutting_down.is_set():  # the app quit while we were opening
+            _close_quietly(link)
+            return
+        self._results.put(_Opened(link))
+
+    def _close_later(self, link: Link) -> None:
+        """Close ``link`` on a worker thread; ``tick()`` sees a ``_Closed`` when it is done."""
+        self._closing.add(link)
+
+        def close() -> None:
+            _close_quietly(link)
+            self._results.put(_Closed(link))
+
+        thread = threading.Thread(target=close, name="link-close", daemon=True)
+        self._close_threads = [t for t in self._close_threads if t.is_alive()] + [thread]
+        thread.start()
 
     def disconnect(self) -> None:
         st = self.state
         link, self._link = self._link, None
-        self._connecting = None  # a connect still in progress is closed when it finishes
+        if self._connecting is not None:  # still opening: closed as soon as open() returns
+            self._closing.add(self._connecting)
+            self._connecting = None
+        if link is not None:
+            self._close_later(link)
         self._scanner = None
         self._live_awaiting = None
         st.running = st.stopping = False
         st.scan_partial = st.scan_progress = None
         st.model = st.capabilities = st.config = None
-        st.connection = "disconnected"
+        st.connection = "disconnecting" if self._closing else "disconnected"
         st.sweeps_per_s = 0.0
         st.trace_version += 1
         self._update_estimate()
-        self._say("Disconnected")
-        if link is not None:
-            _close_in_background(link)
+        self._say(_DISCONNECTING if self._closing else "Disconnected")
 
     def set_auto_connect(self, on: bool) -> None:
         self.state.auto_connect = on
@@ -240,7 +278,8 @@ class Controller:
         self.state.trace_version += 1
 
     def set_waterfall_depth(self, depth: int) -> None:
-        self.state.waterfall.set_depth(max(1, depth))
+        depth = min(max(depth, WATERFALL_DEPTH_MIN), WATERFALL_DEPTH_MAX)
+        self.state.waterfall.set_depth(depth)
         self._changed()
 
     # --- range intents ------------------------------------------------------------------------
@@ -299,15 +338,19 @@ class Controller:
         self._update_rate(now)
 
     def shutdown(self) -> None:
-        """Close the link synchronously (app exit)."""
+        """Close the link synchronously (app exit).
+
+        A connect still in progress closes its own link once ``open()`` returns; background
+        closes are given a few seconds to finish.
+        """
+        self._shutting_down.set()
+        self._connecting = None
         link, self._link = self._link, None
-        connecting, self._connecting = self._connecting, None
-        for item in (link, connecting):
-            if item is not None:
-                try:
-                    item.close()
-                except Exception:
-                    log.warning("error closing the link", exc_info=True)
+        if link is not None:
+            _close_quietly(link)
+        deadline = time.monotonic() + _SHUTDOWN_JOIN_S
+        for thread in self._close_threads:
+            thread.join(timeout=max(0.0, deadline - time.monotonic()))
 
     # --- tick internals -----------------------------------------------------------------------
 
@@ -317,11 +360,19 @@ class Controller:
                 result = self._results.get_nowait()
             except queue.Empty:
                 return
-            if result.link is not self._connecting:  # the user gave up on this connect
-                _close_in_background(result.link)
+            st = self.state
+            if isinstance(result, _Closed):
+                self._closing.discard(result.link)
+                self._closed_one()
+                continue
+            if result.link is not self._connecting:  # abandoned by disconnect() while opening
+                if isinstance(result, _Opened):
+                    self._close_later(result.link)
+                else:
+                    self._closing.discard(result.link)
+                    self._closed_one()
                 continue
             self._connecting = None
-            st = self.state
             if isinstance(result, _OpenFailed):
                 st.connection = "disconnected"
                 st.error = result.message
@@ -341,6 +392,14 @@ class Controller:
             self._update_estimate()
             caps = st.capabilities
             self._say(f"Connected: {caps.name if caps else 'device'}")
+
+    def _closed_one(self) -> None:
+        st = self.state
+        if not self._closing and st.connection == "disconnecting":
+            st.connection = "disconnected"
+            if st.message == _DISCONNECTING:
+                st.message = "Disconnected"
+            self._changed()
 
     def _drain_events(self, link: Link) -> None:
         st = self.state
@@ -535,14 +594,11 @@ def _drain(link: Link) -> list[Sweep]:
             return out
 
 
-def _close_in_background(link: Link) -> None:
-    def close() -> None:
-        try:
-            link.close()
-        except Exception:
-            log.warning("error closing the link", exc_info=True)
-
-    threading.Thread(target=close, name="link-close", daemon=True).start()
+def _close_quietly(link: Link) -> None:
+    try:
+        link.close()
+    except Exception:
+        log.warning("error closing the link", exc_info=True)
 
 
 __all__ = ["LIVE_CONFIRM_TIMEOUT_S", "Controller", "LinkFactory", "PortLister"]

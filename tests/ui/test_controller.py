@@ -40,6 +40,37 @@ class FailingLink(SimulatedLink):
         raise ConnectionError("Permission denied on /dev/ttyUSB0")
 
 
+class ExclusivePort:
+    """A serial port that, like ``exclusive=True``, cannot be opened twice."""
+
+    def __init__(self) -> None:
+        self.held = False
+        self.opens = 0
+
+
+class ExclusiveLink(SimulatedLink):
+    """Holds ``port`` from open() until close() finishes; close() is slow like SerialLink's join."""
+
+    def __init__(self, port: ExclusivePort, *, close_s: float = 0.3, connect_delay_s: float = 0.0):
+        super().__init__(sweep_interval_s=0.01, connect_delay_s=connect_delay_s)
+        self._port = port
+        self._close_s = close_s
+
+    def open(self, timeout_s: float = 5.0) -> None:
+        if self._port.held:
+            raise ConnectionError("Port busy")
+        self._port.held = True
+        self._port.opens += 1
+        super().open(timeout_s)
+
+    def close(self) -> None:
+        was_open = self.is_open
+        super().close()
+        if was_open:
+            time.sleep(self._close_s)
+            self._port.held = False
+
+
 class PortLink(SimulatedLink):
     """A simulator that reports the port it found, like SerialLink(port=None)."""
 
@@ -146,10 +177,12 @@ def test_simulator_never_becomes_the_last_port(ctl: Controller) -> None:
 def test_disconnect(ctl: Controller, factory: Factory) -> None:
     connected(ctl)
     ctl.disconnect()
-    assert ctl.state.connection == "disconnected"
+    assert ctl.state.connection == "disconnecting"
     assert ctl.state.capabilities is None
     link = factory.links[0]
-    run_until(ctl, lambda: not link.is_open)
+    run_until(ctl, lambda: ctl.state.connection == "disconnected")
+    assert not link.is_open
+    assert ctl.state.message == "Disconnected"
 
 
 def test_link_events_drive_the_connection_state(ctl: Controller, factory: Factory) -> None:
@@ -433,3 +466,77 @@ def test_a_preset_the_device_cannot_tune_becomes_a_custom_range(factory: Factory
     assert c.state.preset is None
     assert (c.state.start_hz, c.state.stop_hz) == (1785 * MHZ, 1805 * MHZ)
     c.shutdown()
+
+
+def test_reconnect_waits_until_the_port_is_closed() -> None:
+    port = ExclusivePort()
+    factory = Factory(lambda: ExclusiveLink(port))
+    c = Controller(factory, port_lister=lambda: [])
+    connected(c)
+    c.disconnect()
+    c.connect("/dev/ttyUSB0")  # too early: the old link still holds the port
+    assert len(factory.links) == 1
+    assert "previous connection" in c.state.message
+    run_until(c, lambda: c.state.connection == "disconnected")
+    assert not port.held
+    c.connect("/dev/ttyUSB0")
+    run_until(c, lambda: c.state.connection == "connected")
+    assert c.state.error is None and port.opens == 2
+    c.shutdown()
+
+
+def test_disconnect_during_connect_closes_the_late_link() -> None:
+    port = ExclusivePort()
+    factory = Factory(lambda: ExclusiveLink(port, connect_delay_s=0.3))
+    c = Controller(factory, port_lister=lambda: [])
+    c.connect("/dev/ttyUSB0")
+    c.disconnect()
+    assert c.state.connection == "disconnecting"
+    c.connect("/dev/ttyUSB0")  # refused: the first open() is still running
+    assert len(factory.links) == 1
+    run_until(c, lambda: c.state.connection == "disconnected")
+    assert not factory.links[0].is_open and not port.held
+    c.connect("/dev/ttyUSB0")
+    run_until(c, lambda: c.state.connection == "connected")
+    assert port.opens == 2
+    c.shutdown()
+
+
+def test_failed_abandoned_connect_releases_the_wait() -> None:
+    factory = Factory(FailingLink)
+    c = Controller(factory, port_lister=lambda: [])
+    c.connect("/dev/ttyUSB0")
+    c.disconnect()
+    run_until(c, lambda: c.state.connection == "disconnected")
+
+
+def test_shutdown_during_connect_closes_the_link_after_open() -> None:
+    factory = Factory(lambda: SimulatedLink(connect_delay_s=0.2))
+    c = Controller(factory, port_lister=lambda: [], simulator=True)
+    c.connect()
+    c.shutdown()
+    link = factory.links[0]
+    deadline = time.monotonic() + 3
+    while time.monotonic() < deadline and (link.model is None or link.is_open):
+        time.sleep(0.01)
+    assert link.model is not None, "open() finished"
+    assert not link.is_open
+
+
+def test_link_thread_dying_disconnects(ctl: Controller, factory: Factory) -> None:
+    connected(ctl)
+    link = factory.links[0]
+    assert isinstance(link, SimulatedLink)
+    link._stop.set()  # the worker thread ends without a "disconnected" event
+    assert link._thread is not None
+    link._thread.join(timeout=2)
+    run_until(ctl, lambda: ctl.state.connection == "disconnected")
+    assert ctl.state.error == "The device link closed"
+    assert ctl.state.message == "Device disconnected"
+
+
+def test_waterfall_depth_is_clamped(ctl: Controller) -> None:
+    ctl.set_waterfall_depth(5)
+    assert ctl.state.waterfall.depth == 10
+    ctl.set_waterfall_depth(10_000)
+    assert ctl.state.waterfall.depth == 1000

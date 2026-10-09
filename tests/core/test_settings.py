@@ -85,3 +85,18 @@ def test_corrupt_file_gives_defaults(tmp_path: Path, caplog: pytest.LogCaptureFi
 def test_default_path_is_in_the_user_config_dir(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(settings_mod, "user_config_dir", lambda app: f"/cfg/{app}")
     assert default_path() == Path("/cfg/opencoord/settings.toml")
+
+
+def test_invalid_utf8_gives_defaults(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+    path = tmp_path / "settings.toml"
+    path.write_bytes(b"\xff\xfe preset = 1")
+    assert load(path) == AppSettings()
+    assert "settings" in caplog.text
+
+
+def test_waterfall_depth_limits(tmp_path: Path) -> None:
+    path = tmp_path / "settings.toml"
+    path.write_text("waterfall_depth = 1001\n", encoding="utf-8")
+    assert load(path).waterfall_depth == 300
+    path.write_text("waterfall_depth = 1000\n", encoding="utf-8")
+    assert load(path).waterfall_depth == 1000

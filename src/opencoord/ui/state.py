@@ -25,7 +25,7 @@ DISPLAY_BINS = 1024
 DEFAULT_WATERFALL_DEPTH = 300
 
 Mode = Literal["live", "scan"]
-Connection = Literal["disconnected", "connecting", "connected", "reconnecting"]
+Connection = Literal["disconnected", "connecting", "connected", "reconnecting", "disconnecting"]
 
 
 def resample_max(
@@ -39,7 +39,12 @@ def resample_max(
 
     A column holding points takes their maximum (so a one-bin carrier survives downsampling);
     an empty column inside the data is linearly interpolated, and one outside it is NaN.
+    A degenerate range (``hi_hz <= lo_hz``, e.g. a one-point trace) fills every column with the
+    maximum level (NaN when there are no points).
     """
+    if hi_hz <= lo_hz:
+        level = float(np.max(dbm)) if len(dbm) else np.nan
+        return np.full(bins, level, dtype=np.float32)
     out = np.full(bins, -np.inf, dtype=np.float32)
     width = (hi_hz - lo_hz) / bins
     col = np.floor((freqs_hz - lo_hz) / width).astype(np.int64)

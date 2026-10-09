@@ -23,7 +23,9 @@ APP_NAME = "opencoord"
 _RESOLUTIONS = ("fast", "normal", "fine")
 _MODES = ("live", "scan")
 _MIN_WINDOW = 400
-_MAX_WATERFALL_DEPTH = 5000
+#: Waterfall history rows accepted by the settings, the controller and the scan panel.
+WATERFALL_DEPTH_MIN = 10
+WATERFALL_DEPTH_MAX = 1000
 
 
 @dataclass(frozen=True)
@@ -62,7 +64,7 @@ def _valid(name: str, value: Any) -> bool:
     if name in ("window_width", "window_height"):
         return value >= _MIN_WINDOW
     if name == "waterfall_depth":
-        return 1 <= value <= _MAX_WATERFALL_DEPTH
+        return WATERFALL_DEPTH_MIN <= value <= WATERFALL_DEPTH_MAX
     return False
 
 
@@ -74,7 +76,7 @@ def load(path: Path | None = None) -> AppSettings:
             data = tomllib.load(f)
     except FileNotFoundError:
         return AppSettings()
-    except (OSError, tomllib.TOMLDecodeError) as exc:
+    except (OSError, ValueError) as exc:  # TOMLDecodeError and UnicodeDecodeError are ValueErrors
         log.warning("ignoring unreadable settings file %s: %s", path, exc)
         return AppSettings()
     values: dict[str, Any] = {}
@@ -107,4 +109,11 @@ def save(settings: AppSettings, path: Path | None = None) -> None:
     tmp.replace(path)
 
 
-__all__ = ["AppSettings", "default_path", "load", "save"]
+__all__ = [
+    "WATERFALL_DEPTH_MAX",
+    "WATERFALL_DEPTH_MIN",
+    "AppSettings",
+    "default_path",
+    "load",
+    "save",
+]
