@@ -58,8 +58,11 @@ class FileUI:
         self.files = files
         self._plot_rect = plot_rect
         self._dialogs = 0
-        #: Pending plot capture: frames still to wait and who gets the picture.
-        self._capture: tuple[int, Callable[[npt.NDArray[np.uint8] | None], None]] | None = None
+        #: Pending plot capture: frames still to wait and who gets the picture (several requests
+        #: made while one is pending share it).
+        self._capture: tuple[int, list[Callable[[npt.NDArray[np.uint8] | None], None]]] | None = (
+            None
+        )
         self._title = ""
 
     # --- layout ------------------------------------------------------------------------------
@@ -155,8 +158,10 @@ class FileUI:
 
     def capture_plot(self, done: Callable[[npt.NDArray[np.uint8] | None], None]) -> None:
         """Grab the plot area a few frames from now (after dialogs closed) and pass the RGBA
-        pixels to ``done`` on the UI thread (``None`` when the frame could not be read)."""
-        self._capture = (CAPTURE_DELAY_FRAMES, done)
+        pixels to ``done`` on the UI thread (``None`` when the frame could not be read). A request
+        made while another is pending is served by the same capture (after the full delay)."""
+        waiting = self._capture[1] if self._capture is not None else []
+        self._capture = (CAPTURE_DELAY_FRAMES, [*waiting, done])
 
     # --- dialogs -----------------------------------------------------------------------------
 
@@ -202,14 +207,16 @@ class FileUI:
             dpg.set_viewport_title(title)
         if self._capture is None:
             return
-        frames, done = self._capture
+        frames, waiting = self._capture
         if frames > 0:
-            self._capture = (frames - 1, done)
+            self._capture = (frames - 1, waiting)
             return
         self._capture = None
-        dpg.output_frame_buffer(callback=lambda _s, buf: self._captured(done, buf))
+        dpg.output_frame_buffer(callback=lambda _s, buf: self._captured(waiting, buf))
 
-    def _captured(self, done: Callable[[npt.NDArray[np.uint8] | None], None], buffer: Any) -> None:
+    def _captured(
+        self, waiting: list[Callable[[npt.NDArray[np.uint8] | None], None]], buffer: Any
+    ) -> None:
         try:
             frame = frame_to_rgba(buffer, dpg.get_viewport_client_width())
             rgba: npt.NDArray[np.uint8] | None = np.ascontiguousarray(
@@ -218,4 +225,5 @@ class FileUI:
         except (ValueError, KeyError, SystemError):
             log.warning("could not read the frame buffer", exc_info=True)
             rgba = None
-        done(rgba)
+        for done in waiting:
+            done(rgba)

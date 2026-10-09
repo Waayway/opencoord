@@ -21,13 +21,14 @@ Failures never raise: they become a message (also in the status bar) and a ``Fal
 
 from __future__ import annotations
 
+import hashlib
 import itertools
 import logging
 import queue
 import threading
 import time
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Final
@@ -110,6 +111,26 @@ class _Job:
     scan_label: str | None = None
     solve_key: str = ""
     assignments: tuple[Assignment, ...] = ()
+    #: Set when the job is abandoned: the solver's clock then jumps past its deadline.
+    stop: threading.Event = field(default_factory=threading.Event, compare=False)
+
+
+def _stoppable(clock: Callable[[], float], stop: threading.Event) -> Callable[[], float]:
+    """``clock`` that jumps far ahead once ``stop`` is set, so the solver's time budget ends
+    the search at its next node (``solve`` has no other way to be interrupted)."""
+
+    def tick() -> float:
+        return clock() + (1e12 if stop.is_set() else 0.0)
+
+    return tick
+
+
+def _trace_digest(trace: Trace) -> str:
+    h = hashlib.blake2b(digest_size=12)
+    h.update(trace.label.encode())
+    h.update(np.ascontiguousarray(trace.freqs_hz).tobytes())
+    h.update(np.ascontiguousarray(trace.dbm).tobytes())
+    return h.hexdigest()
 
 
 @dataclass(frozen=True)
@@ -141,6 +162,8 @@ class CoordinationActions:
         self.result: CoordinationResult | None = None
         #: ``model.solve_key()`` of the setup the result was made from.
         self.result_key: str | None = None
+        #: ``(trace_version, digest)`` of the main trace (hashing it once per new data).
+        self._scan_digest: tuple[int, str | None] | None = None
         self.check_outcome: CheckOutcome | None = None
         self.show_on_spectrum = True
         self.message = ""
@@ -236,6 +259,8 @@ class CoordinationActions:
         self._job = job
 
         def run() -> None:
+            if job.stop.is_set():
+                return  # abandoned before it started
             try:
                 value: Plan | CheckReport | BaseException = work()
             except BaseException as exc:  # reported on the UI thread
@@ -256,6 +281,8 @@ class CoordinationActions:
         except ValueError as exc:
             self.say(f"Cannot coordinate: {exc}", error=True)
             return False
+        stop = threading.Event()
+        request = replace(request, clock=_stoppable(request.clock, stop))
         job = _Job(
             next(self._ids),
             "solve",
@@ -263,7 +290,8 @@ class CoordinationActions:
             request.time_budget_s,
             locked=tuple(self.model.locks),
             scan_label=None if scan is None else scan.label,
-            solve_key=self.model.solve_key(),
+            solve_key=self.solve_key(),
+            stop=stop,
         )
         self._start(job, lambda: self._solver(request))
         self.say("Coordinating...")
@@ -295,11 +323,17 @@ class CoordinationActions:
         if self._job is None:
             return
         kind = self._job.kind
-        self._job = None
+        self._drop_job()
         self.say("Coordination cancelled" if kind == "solve" else "Check cancelled")
 
+    def _drop_job(self) -> None:
+        """Forget the running job and make its solver stop at its next node."""
+        if self._job is not None:
+            self._job.stop.set()
+            self._job = None
+
     def _on_shutdown(self) -> None:
-        self._job = None
+        self._drop_job()
 
     def _on_tick(self, _now: float) -> None:
         while True:
@@ -329,7 +363,9 @@ class CoordinationActions:
                 error=n > 0,
             )
             return
-        self.result = CoordinationResult(value, job.locked, job.scan_label, self._timestamp())
+        self.result = CoordinationResult(
+            value, job.locked, job.scan_label, self._timestamp(), job.solve_key
+        )
         self.result_key = job.solve_key
         s = value.stats
         total = export_plan.device_count(value)
@@ -341,10 +377,42 @@ class CoordinationActions:
 
     # --- results -------------------------------------------------------------------------------
 
+    def _scan_key(self) -> str | None:
+        """Digest of the trace a run would use now (``None``: no scan / "use scan" off)."""
+        if not self.model.options.use_scan:
+            return None
+        version = self.controller.state.trace_version
+        if self._scan_digest is None or self._scan_digest[0] != version:
+            found = self.controller.resolve_trace("max")
+            self._scan_digest = (version, None if found is None else _trace_digest(found[1]))
+        return self._scan_digest[1]
+
+    def solve_key(self) -> str:
+        """Fingerprint of everything a run depends on: the setup (check texts excluded), the
+        profiles and presets it uses, zones, channel plan and the scan data."""
+        profiles, presets = self.profile_map(), self.presets()
+        used = sorted({r.profile for r in self.model.rows if r.quantity > 0})
+        context = [
+            [
+                (n, repr(p), repr(presets.get(p.spacing_preset)))
+                for n in used
+                if (p := profiles.get(n))
+            ],
+            [repr(presets.get(lk.preset)) for lk in self.model.locks],
+            repr(tuple(self.controller.state.exclusion_zones)),
+            getattr(self.controller.state.channel_plan, "name", None),
+            self._scan_key(),
+        ]
+        h = hashlib.blake2b(digest_size=16)
+        h.update(self.model.solve_key().encode())
+        h.update(repr(context).encode())
+        return h.hexdigest()
+
     @property
     def stale(self) -> bool:
-        """The setup changed since the shown plan was made (check-mode texts do not count)."""
-        return self.result is not None and self.result_key != self.model.solve_key()
+        """The setup, profiles, zones, plan or scan changed since the shown plan was made
+        (check-mode texts do not count)."""
+        return self.result is not None and self.result_key != self.solve_key()
 
     def clear_result(self) -> None:
         self.result = None
@@ -423,11 +491,11 @@ class CoordinationActions:
         self, setup: Mapping[str, Any] | None, plan: Mapping[str, Any] | None
     ) -> None:
         """Replace the setup and plan with a session's (bad data becomes a message)."""
-        self._job = None
+        self._drop_job()
         problems = []
         try:
             model = CoordinationModel.from_dict(setup or {})
-        except ValueError as exc:
+        except (ValueError, TypeError, OverflowError) as exc:
             problems.append(f"the coordination setup ({exc})")
             model = CoordinationModel()
         # Keep counting upwards so views notice the swap.
@@ -438,9 +506,10 @@ class CoordinationActions:
         if plan is not None:
             try:
                 self.result = result_from_dict(plan)
-            except ValueError as exc:
+            except (ValueError, TypeError, OverflowError) as exc:
                 problems.append(f"the frequency plan ({exc})")
-        self.result_key = model.solve_key() if self.result is not None else None
+        # The key saved with the plan: a plan made from other data reopens as stale.
+        self.result_key = self.result.solve_key if self.result is not None else None
         self.check_outcome = None
         self._bump()
         if problems:

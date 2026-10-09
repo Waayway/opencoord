@@ -197,7 +197,11 @@ class FileActions:
         st.trace_version += 1
         st.ui_version += 1
         if self.coordination is not None:
-            self.coordination.apply_session(session.coordination, session.plan)
+            try:
+                self.coordination.apply_session(session.coordination, session.plan)
+            except Exception:  # a bad plan must never break opening the rest of the session
+                log.exception("could not restore the coordination data")
+                self.coordination.say("Could not restore the coordination data of the session")
 
     # --- exports and imports -----------------------------------------------------------------
 

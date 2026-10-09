@@ -570,13 +570,14 @@ class CoordinationPanel:
             if not dpg.get_value(TAG_LOCK_PRESET):
                 dpg.set_value(TAG_LOCK_PRESET, a.default_lock_preset())
         scan = a.controller.resolve_trace("max")
-        seen = (a.version, m.revision, a.running, scan is not None)
+        label = None if scan is None else scan[1].label
+        seen = (a.version, m.revision, a.running, label, a.stale)
         if seen == self._seen:
             return
         self._seen = seen
-        self._update_texts(scan is not None)
+        self._update_texts(label)
 
-    def _update_texts(self, have_scan: bool) -> None:
+    def _update_texts(self, scan_label: str | None) -> None:
         a, m = self._a, self._a.model
         o = m.options
         self._set(TAG_MESSAGE, a.message)
@@ -588,7 +589,7 @@ class CoordinationPanel:
             self._set(f"coord.check.row.{i}.name", f"{row.profile or '?'} ({row.quantity})")
         self._value(TAG_USE_SCAN, o.use_scan)
         if o.use_scan:
-            info = "main trace (max hold)" if have_scan else "no scan data yet: not used"
+            info = f"using {scan_label}" if scan_label else "no scan data yet: not used"
         else:
             info = "coordinating without a scan"
         self._set(TAG_SCAN_INFO, info)
@@ -620,7 +621,9 @@ class CoordinationPanel:
         self._set(TAG_STATS, stats_text(plan) if plan else "No plan yet. Press Coordinate.")
         self._set(
             TAG_STALE,
-            "The setup changed since this plan was made; press Coordinate again" if a.stale else "",
+            "The setup or the scan changed since this plan was made; press Coordinate again"
+            if a.stale
+            else "",
         )
         self._set(TAG_WARNINGS, "\n".join(f"! {w}" for w in plan.warnings) if plan else "")
         self._set(TAG_UNASSIGNED, unassigned_text(plan) if plan else "")

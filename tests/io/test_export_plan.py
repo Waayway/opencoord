@@ -147,3 +147,32 @@ def test_writers_are_atomic_utf8(tmp_path: Path) -> None:
     export_plan.write_text(p, "Ä\n")
     assert p.read_bytes() == "Ä\n".encode()
     assert [x.name for x in p.parent.iterdir()] == ["plan.txt"]
+
+
+def test_csv_text_cells_cannot_run_formulas() -> None:
+    plan = Plan(
+        (Assignment("=1+1", "@SUM(A1)", 600_000_000, "+g", -98.2, 1000),),
+        (Unassigned("-x #2", "@SUM(A1)", "imd-conflicts"),),
+        types.MappingProxyType({"@SUM(A1)": (601_000_000,)}),
+        ("=HYPERLINK(1)", "\tTab", "\rCR"),
+        SolveStats(0.0, 1, False, False),
+    )
+    d = PlanDocument(plan, ((610_000_000, "=cmd"),), "t", "v")
+    rows = list(csv.reader(io.StringIO(export_plan.plan_csv(d))))
+    assert rows[1] == ["'=1+1", "'@SUM(A1)", "600.000", "'+g", "-98.2", "1.0"]
+    assert ["'-x #2", "'@SUM(A1)", "", "", "", ""] in rows
+    assert ["'=cmd", "locked", "610.000", "", "", ""] in rows
+    assert ["backup", "'@SUM(A1)", "601.000", "", "", ""] in rows
+    warnings = [r[1] for r in rows if r[0] == "warning"]
+    assert "'=HYPERLINK(1)" in warnings and "'\tTab" in warnings and "'\rCR" in warnings
+    # Every text cell is guarded; numbers (negative levels) stay as they are.
+    for row in rows[1:]:
+        assert not any(c[:1] in ("=", "+", "@", "\t", "\r") for c in row)
+
+
+def test_spreadsheet_safe() -> None:
+    from opencoord.io.export_scan import spreadsheet_safe
+
+    assert spreadsheet_safe("=1+1") == "'=1+1"
+    assert spreadsheet_safe("-5") == "'-5"
+    assert spreadsheet_safe("Mic #1") == "Mic #1" and spreadsheet_safe("") == ""

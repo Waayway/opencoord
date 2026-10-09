@@ -52,7 +52,7 @@
   M adds a marker at the cursor (at the peak of the main trace when the mouse is not over the plot), P moves the
   selected marker to the peak, N / Shift+N to the next peak right / left; ignored with Ctrl or Alt held
   (`Shortcut.shift` selects the Shift variant). Ctrl+S / Ctrl+Shift+S / Ctrl+O / Ctrl+E (`shortcuts.bind_files`, work in text fields too) = save / save as / open / export.
-- **Files** (Task 16): `ui/files.py` `FileActions(controller)` (no DPG; `path`, `title`, `build_session`, `save(path)`, `open(path)`, `apply_session`, `export(fmt_key, trace_key, path, rgba)`, `import_reference(path)`, `trace_choices()`; every failure becomes a status message and `False`) and `ui/file_dialogs.py` `FileUI` (File menu in the main window's menu bar: Open, Save, Save as, Export, Import scan as reference; modal export window with format + trace combos, then a DPG `file_dialog`; the window title shows the session file name). **Opening a session while connected never touches the device:** acquisition is stopped, saved range/mode/resolution become the selected settings, saved live/max/avg/min traces are shown until new sweeps replace them, references/markers/zones/threshold/overlay are replaced. `opencoord <file.opencoord>` opens at startup. **PNG export:** `FileUI.capture_plot(done)` (also used by the plan's HTML export) calls `dpg.output_frame_buffer(callback=)` 4 frames after the dialog closed (so it is not in the picture), float32 RGBA converted to uint8 and cropped to the plot area (`App.plot_rect()`: readout line + spectrum + waterfall; computed from the readout's position and the layout constants because child windows expose no `rect_min`). Unsaved-changes indicator: not implemented.
+- **Files** (Task 16): `ui/files.py` `FileActions(controller)` (no DPG; `path`, `title`, `build_session`, `save(path)`, `open(path)`, `apply_session`, `export(fmt_key, trace_key, path, rgba)`, `import_reference(path)`, `trace_choices()`; every failure becomes a status message and `False`) and `ui/file_dialogs.py` `FileUI` (File menu in the main window's menu bar: Open, Save, Save as, Export, Import scan as reference; modal export window with format + trace combos, then a DPG `file_dialog`; the window title shows the session file name). **Opening a session while connected never touches the device:** acquisition is stopped, saved range/mode/resolution become the selected settings, saved live/max/avg/min traces are shown until new sweeps replace them, references/markers/zones/threshold/overlay are replaced. `opencoord <file.opencoord>` opens at startup. **PNG export:** `FileUI.capture_plot(done)` (also used by the plan's HTML export; requests made while one is pending share the same capture) calls `dpg.output_frame_buffer(callback=)` 4 frames after the dialog closed (so it is not in the picture), float32 RGBA converted to uint8 and cropped to the plot area (`App.plot_rect()`: readout line + spectrum + waterfall; computed from the readout's position and the layout constants because child windows expose no `rect_min`). Unsaved-changes indicator: not implemented.
 - **Markers, threshold, references** (Task 14):
   - Pure math in `core/markers.py` (`Marker(id, freq_hz, trace_key)`, `level_at` nearest bin or `None` outside the
     trace, `peak`, `next_peak(trace, from, "left"|"right", min_prominence_db=3.0)` built on `find_peaks`,
@@ -181,11 +181,16 @@
     loaded presets (built-ins if none). Scan = `controller.resolve_trace("max")` (max hold, scan, live) **copied**
     (the max hold may change in place) unless "use scan" is off. `coordinate()` / `check()` start a daemon worker
     thread (one job at a time); the result is posted to a queue drained by a `Controller.on_tick` hook (UI thread);
-    `cancel()` forgets the job id so its late result is dropped (the solver stops at its own time budget);
+    `cancel()` forgets the job id so its late result is dropped, and sets the job's stop `Event`: the request's
+    `clock` is wrapped (`_stoppable`) to jump 1e12 s ahead once set, so `solve` hits its deadline at the next node
+    and the thread ends promptly (also on session open and app shutdown);
     `progress_text()` = `Coordinating... (x.x s of up to N s)`. A solver exception becomes "Coordination failed: ...".
-    Also `stale`, `fill_check_from_result`, `clear_result`, `set_show_on_spectrum`, `spectrum_lines()`,
+    `solve_key()` = digest of the model's `solve_key()` plus the context (profiles and presets in use, lock
+    presets, zones, channel plan name, digest of the scan trace data, cached per `trace_version`); `stale` compares
+    it with the key stored in the result (saved in the session). Also `fill_check_from_result`, `clear_result`, `set_show_on_spectrum`, `spectrum_lines()`,
     `document()` / `export(key, path, rgba)` (csv / txt / html via `io/export_plan.py`), `session_parts()` /
-    `apply_session(setup, plan)` (`FileActions.coordination` calls them; unreadable parts are ignored with a message).
+    `apply_session(setup, plan)` (`FileActions.coordination` calls them; unreadable parts (`ValueError`, `TypeError`,
+    `OverflowError`) are ignored with a message; `FileActions` also turns anything else it raises into a message).
     `version` bumps on every shown change.
   - Panel: device rows (profile combo + quantity + X; "Add device"), collapsing "Locked carriers" (paste box,
     label, preset, Lock; rows with label + preset), collapsing "Options", Coordinate / Cancel + progress, stats line,
@@ -194,7 +199,7 @@
     "Edit as check", Clear, Export CSV / Text / Printable HTML (HTML = `FileUI.capture_plot` then export), and
     collapsing "Check a hand-made plan" (a MHz box per device row, Check, summary, violation table rule / needs /
     is / involved, warnings). Rows are rebuilt on `(model id, structure_version, profile names, preset names)`;
-    texts refresh on `(version, revision, running, has scan)`. `is_typing()` joins the profiles panel's in
+    texts refresh on `(version, revision, running, scan label, stale)`; the scan info shows the resolved trace's label. `is_typing()` joins the profiles panel's in
     `shortcuts.bind(typing=...)`.
   - Spectrum (`plan_overlay.py` `PlanOverlayView`, owned by `SpectrumView(controller, plan)`): assigned
     frequencies = one `inf_line_series` "Plan" (vermillion, weight 2), backups = "Backups" (same colour, dim); both in

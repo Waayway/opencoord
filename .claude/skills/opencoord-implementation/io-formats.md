@@ -15,7 +15,10 @@ Schema 2 (Task 22) adds `coordination` and fills `plan`; v1 files (plan always n
 - `plan`: `{"created", "scan_label", "assignments": [{"label", "profile", "freq_hz", "group", "scan_level_dbm",
   "imd_margin_hz"}], "unassigned": [{"label", "profile", "reason", "blocked_by": {"rule", "required_hz",
   "actual_hz", "sources", "victim", "product_hz"} | null}], "backups": {profile: [Hz]}, "warnings": [...],
-  "stats": {"elapsed_s", "nodes", "complete", "timed_out"}, "locked": [{"freq_hz", "label", "preset"}]}`.
+  "stats": {"elapsed_s", "nodes", "complete", "timed_out"}, "locked": [{"freq_hz", "label", "preset"}],
+  "solve_key"}` (`solve_key` = fingerprint of what the plan was made from, so a plan reopened over other data shows
+  as stale). Frequencies must be in (0, 10 GHz] (assignments, backups, locked; setup locks too) and device labels
+  unique, else the plan is ignored with a message.
   Tests: `tests/ui/test_coordination_model.py` (round trip, bad data), `tests/ui/test_coordination_actions.py`.
 
 ## Frequency plan exports (`io/export_plan.py`, Task 22)
@@ -26,8 +29,10 @@ clashes), then `<label> (<profile>): no frequency - <describe_unassigned>` per m
 - CSV: header `device,profile,frequency_mhz,group,scan_level_dbm,imd_margin_khz` (MHz 3 decimals, dBm and kHz 1
   decimal, empty when unknown); assigned rows, then unassigned devices (empty frequency), locked carriers (profile
   `locked`), backups (device `backup`, profile, MHz) and warnings (device `warning`, the text in the profile
-  column, other cells empty). Python `csv` quoting, `
-`.
+  column, other cells empty). Python `csv` quoting, `\n` line ends. **Formula injection guard:** text cells
+  (device, profile, group, warning text, locked labels) starting with `= + - @`, tab or CR get a leading `'`
+  (`export_scan.spreadsheet_safe`, OWASP); numeric cells (e.g. `-98.2`) are never touched. The WSM scan export's
+  `Label;` line uses the same guard (the other scan CSVs contain numbers only).
 - TXT: title, `Generated <ts> by OpenCoord <v>`, `Scan: <label>|not used`, a `WARNINGS` block (`  ! ...`) **at the
   top** (else the "Complete: ..." line), search stats, an aligned table (numbers right-aligned, `-` = unknown),
   then Unassigned, Backups (MHz), Locked carriers (MHz).

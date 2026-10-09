@@ -345,3 +345,27 @@ def test_rules_of_locks_default_to_generic_analog() -> None:
     assert request_for(m).locked[0].rules == SpacingRules(
         350 * KHZ, 100 * KHZ, 50 * KHZ, 50 * KHZ, 50 * KHZ, 0
     )
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        lambda d: d["assignments"][0].update(freq_hz=0),
+        lambda d: d["assignments"][0].update(freq_hz=10_000_000_001),
+        lambda d: d["backups"].update(Mic=[-5]),
+        lambda d: d["locked"][0].update(freq_hz=20_000_000_000),
+        lambda d: d["unassigned"][0].update(label="Mic #1"),
+    ],
+)
+def test_result_from_dict_range_checks(mutate) -> None:  # type: ignore[no-untyped-def]
+    d = json.loads(json.dumps(result_to_dict(sample_result())))
+    mutate(d)
+    with pytest.raises(ValueError):
+        result_from_dict(d)
+
+
+def test_setup_lock_frequency_is_range_checked() -> None:
+    with pytest.raises(ValueError):
+        CoordinationModel.from_dict({"locked": [{"freq_hz": 0, "label": "x"}]})
+    with pytest.raises(ValueError):
+        CoordinationModel.from_dict({"locked": [{"freq_hz": 10**11, "label": "x"}]})

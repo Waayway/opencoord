@@ -300,8 +300,9 @@ class CoordinationModel:
             m.rows.append(row)
         for rec in _records(data, "locked")[:MAX_LOCKS]:
             freq = _typed(rec, "freq_hz", int, None)
-            if freq is None or freq <= 0:
-                raise ValueError("a locked carrier needs a positive 'freq_hz'")
+            if freq is None:
+                raise ValueError("a locked carrier needs 'freq_hz'")
+            _check_freq(freq)
             label = _typed(rec, "label", str, "").strip() or lock_label(freq)
             m.locks.append(LockRow(freq, label, _typed(rec, "preset", str, DEFAULT_LOCK_PRESET)))
         m.locks.sort(key=lambda lk: lk.freq_hz)
@@ -481,6 +482,8 @@ class CoordinationResult:
     scan_label: str | None
     #: When it was solved (ISO 8601, UTC).
     created: str
+    #: Fingerprint of what it was solved from (``CoordinationActions.solve_key``).
+    solve_key: str = ""
 
 
 def _violation_to_dict(v: Violation | None) -> dict[str, Any] | None:
@@ -502,6 +505,7 @@ def result_to_dict(result: CoordinationResult) -> dict[str, Any]:
     return {
         "created": result.created,
         "scan_label": result.scan_label,
+        "solve_key": result.solve_key,
         "assignments": [
             {
                 "label": a.label,
@@ -605,6 +609,15 @@ def result_from_dict(data: Mapping[str, Any]) -> CoordinationResult:
         )
         for rec in _records(data, "locked")
     )
+    labels = [a.label for a in assignments] + [u.label for u in unassigned]
+    if len(set(labels)) != len(labels):
+        raise ValueError("device labels must be unique")
+    for f in (
+        *(a.freq_hz for a in assignments),
+        *(lk.freq_hz for lk in locked),
+        *(f for fs in backups.values() for f in fs),
+    ):
+        _check_freq(f)
     plan = Plan(
         assignments,
         tuple(unassigned),
@@ -613,11 +626,23 @@ def result_from_dict(data: Mapping[str, Any]) -> CoordinationResult:
         stats,
     )
     return CoordinationResult(
-        plan, locked, _typed(data, "scan_label", str, None), _typed(data, "created", str, "")
+        plan,
+        locked,
+        _typed(data, "scan_label", str, None),
+        _typed(data, "created", str, ""),
+        _typed(data, "solve_key", str, ""),
     )
 
 
 # --- JSON field helpers -----------------------------------------------------------------------
+
+#: Highest frequency accepted from a session (well above any RF Explorer).
+MAX_FREQ_HZ: Final = 10_000_000_000
+
+
+def _check_freq(freq_hz: int) -> None:
+    if not 0 < freq_hz <= MAX_FREQ_HZ:
+        raise ValueError(f"frequency {freq_hz} Hz is out of range")
 
 
 def _is_int(value: object) -> bool:

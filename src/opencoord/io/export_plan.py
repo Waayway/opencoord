@@ -5,6 +5,7 @@ Formats (details in the skill's ``io-formats.md``):
 * CSV: ``device,profile,frequency_mhz,group,scan_level_dbm,imd_margin_khz``; one row per assigned
   device, then unassigned devices (empty frequency), locked carriers (profile ``locked``),
   backups (device ``backup``) and warnings (device ``warning``, the text in the profile column).
+  Text cells starting like a formula (``= + - @``, tab, CR) get a leading ``'``.
 * TXT: a human-readable sheet with the warnings at the top and aligned columns.
 * HTML: a printable, self-contained page (inline CSS, the spectrum as an embedded PNG), with the
   warnings in a highlighted box above the tables.
@@ -26,6 +27,7 @@ from typing import Final
 
 from opencoord.coord.solver import Assignment, Plan, describe_unassigned
 from opencoord.io.atomic import write_atomic
+from opencoord.io.export_scan import spreadsheet_safe
 
 CSV_HEADER: Final = "device,profile,frequency_mhz,group,scan_level_dbm,imd_margin_khz"
 TITLE: Final = "OpenCoord frequency plan"
@@ -107,16 +109,22 @@ def _table_rows(plan: Plan) -> list[tuple[str, str, str, str, str, str]]:
 
 
 def plan_csv(document: PlanDocument) -> str:
+    """Text cells (device, profile, group, warnings) go through ``spreadsheet_safe`` so a name
+    like ``=HYPERLINK(...)`` cannot run as a formula; number cells are written as they are."""
     plan = document.plan
+    t = spreadsheet_safe
     buf = io.StringIO()
     out = csv.writer(buf, lineterminator="\n")
     out.writerow(CSV_HEADER.split(","))
-    out.writerows(_table_rows(plan))
-    out.writerows([u.label, u.profile_name, "", "", "", ""] for u in plan.unassigned)
-    out.writerows([label, "locked", mhz(f), "", "", ""] for f, label in document.locked)
+    out.writerows(
+        [t(label), t(profile), freq, t(group), level, margin]
+        for label, profile, freq, group, level, margin in _table_rows(plan)
+    )
+    out.writerows([t(u.label), t(u.profile_name), "", "", "", ""] for u in plan.unassigned)
+    out.writerows([t(label), "locked", mhz(f), "", "", ""] for f, label in document.locked)
     for name, freqs in plan.backups.items():
-        out.writerows(["backup", name, mhz(f), "", "", ""] for f in freqs)
-    out.writerows(["warning", w, "", "", "", ""] for w in warning_lines(plan))
+        out.writerows(["backup", t(name), mhz(f), "", "", ""] for f in freqs)
+    out.writerows(["warning", t(w), "", "", "", ""] for w in warning_lines(plan))
     return buf.getvalue()
 
 

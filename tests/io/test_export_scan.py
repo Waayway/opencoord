@@ -82,3 +82,13 @@ def test_png_bytes_uses_rgba_array() -> None:
 def test_empty_trace_rejected() -> None:
     with pytest.raises(ValueError):
         export_scan.generic_csv(trace([], []))
+
+
+def test_wsm_label_cannot_run_a_formula() -> None:
+    import numpy as np
+
+    from opencoord.core.types import Trace
+    from opencoord.io.export_scan import wsm_csv
+
+    t = Trace(np.array([470e6, 470.025e6]), np.array([-90.0, -80.0], dtype=np.float32), "=cmd")
+    assert wsm_csv(t).splitlines()[1] == "Label;'=cmd"

@@ -291,3 +291,116 @@ def test_end_to_end_simulated_scan_coordinate_check_export(env, tmp_path: Path) 
     assert sum(1 for row in rows[1:] if row[0].startswith("UHF mic #")) == 10
     assert "Complete: all 10 devices have a frequency" in (tmp_path / "e2e.txt").read_text()
     assert "UHF mic #10" in (tmp_path / "e2e.html").read_text()
+
+
+def solver_threads() -> list[threading.Thread]:
+    return [t for t in threading.enumerate() if t.name == "opencoord-solve"]
+
+
+def test_cancel_stops_the_solver_thread_promptly(env) -> None:  # type: ignore[no-untyped-def]
+    c, _pa, ca = env
+    ca.model.add_device("UHF mic", 150)  # does not complete: the search would use the budget
+    ca.model.set_time_budget_s(60)
+    assert ca.coordinate()
+    time.sleep(0.3)
+    assert solver_threads()
+    t0 = time.monotonic()
+    ca.cancel()
+    while solver_threads():
+        assert time.monotonic() - t0 < 3, "the cancelled solver kept running"
+        time.sleep(0.01)
+    c.tick()
+    assert ca.result is None
+
+
+def test_opening_a_session_mid_solve_drops_the_late_result(env) -> None:  # type: ignore[no-untyped-def]
+    c, pa, _ = env
+    gate = threading.Event()
+
+    def slow(request: CoordinationRequest) -> Plan:
+        gate.wait(5)
+        return solve(request)
+
+    ca = CoordinationActions(c, pa, solver=slow)
+    files = FileActions(c)
+    files.coordination = ca
+    ca.model.add_device("UHF mic", 2)
+    assert ca.coordinate()
+    files.apply_session(
+        session_io.Session(coordination={"devices": [{"profile": "UHF mic", "quantity": 5}]})
+    )
+    assert not ca.running
+    gate.set()
+    time.sleep(0.2)
+    for _ in range(5):
+        c.tick()
+    assert ca.result is None and [r.quantity for r in ca.model.rows] == [5]
+
+
+def test_a_setup_edit_during_the_solve_shows_the_result_as_stale(env) -> None:  # type: ignore[no-untyped-def]
+    c, pa, _ = env
+    gate = threading.Event()
+
+    def slow(request: CoordinationRequest) -> Plan:
+        gate.wait(5)
+        return solve(request)
+
+    ca = CoordinationActions(c, pa, solver=slow)
+    ca.model.add_device("UHF mic", 2)
+    assert ca.coordinate()
+    ca.model.set_quantity(0, 3)
+    gate.set()
+    run_until(c, lambda: not ca.running)
+    assert ca.result is not None and len(ca.result.plan.assignments) == 2
+    assert ca.stale
+
+
+def test_stale_follows_zones_profiles_and_scan(env, tmp_path: Path) -> None:  # type: ignore[no-untyped-def]
+    c, pa, ca = env
+    feed_max_hold(c, 500.0)
+    ca.model.add_device("UHF mic", 2)
+    assert ca.coordinate()
+    run_until(c, lambda: not ca.running)
+    assert not ca.stale
+    zone = c.add_exclusion_zone(600 * MHZ, 601 * MHZ)
+    assert ca.stale
+    assert zone is not None
+    c.remove_exclusion_zone(zone)
+    assert not ca.stale
+    c.state.trace_version += 1  # same data, new version: not stale
+    assert not ca.stale
+    ca.model.set_use_scan(False)
+    assert ca.stale
+    ca.model.set_use_scan(True)
+    feed_max_hold(c, 520.0)  # new scan data
+    assert ca.stale
+    # The key is saved with the plan: reopened over the same data it is not stale.
+    assert ca.coordinate()
+    run_until(c, lambda: not ca.running)
+    files = FileActions(c)
+    files.coordination = ca
+    path = tmp_path / "s.opencoord"
+    assert files.save(path)
+    assert files.open(path)
+    assert ca.result is not None and not ca.stale
+    # A plan made from other data reopens as stale.
+    setup, plan = ca.session_parts()
+    assert plan is not None
+    ca.apply_session(setup, {**plan, "solve_key": "other"})
+    assert ca.result is not None and ca.stale
+    del pa
+
+
+def test_unreadable_session_values_never_raise(env) -> None:  # type: ignore[no-untyped-def]
+    c, _pa, ca = env
+    ca.apply_session({"options": {"threshold_db": 10**400}}, None)  # OverflowError in float()
+    assert "coordination setup" in ca.message and ca.model.rows == []
+    files = FileActions(c)
+    files.coordination = ca
+
+    def boom(*_a: object) -> None:
+        raise RuntimeError("bad")
+
+    ca.apply_session = boom  # type: ignore[method-assign]
+    files.apply_session(session_io.Session())  # does not raise
+    assert ca.message == "Could not restore the coordination data of the session"

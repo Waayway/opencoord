@@ -34,6 +34,16 @@ WSM_HEADER_COLUMNS: Final = "Frequency;RF level (%);RF level;Memory (%);Memory;S
 WSM_PREAMBLE_LINES: Final = 6
 
 
+#: First characters that make a spreadsheet treat a cell as a formula (OWASP CSV injection).
+_FORMULA_START: Final = ("=", "+", "-", "@", "\t", "\r")
+
+
+def spreadsheet_safe(text: str) -> str:
+    """Free text for a CSV cell: prefixed with ``'`` when it starts like a formula, so Excel /
+    LibreOffice show it instead of running it. Only for text cells, never for numbers."""
+    return f"'{text}" if text.startswith(_FORMULA_START) else text
+
+
 def _clean(trace: Trace) -> Trace:
     """``trace`` minus non-finite points (skipped); ``ValueError`` if none remain."""
     if len(trace.freqs_hz) != len(trace.dbm):
@@ -89,7 +99,7 @@ def wsm_csv(trace: Trace) -> str:
     freqs, dbm = _decimate(trace, WWB_MIN_STEP_HZ)
     lines = [
         "OpenCoord scan export",
-        f"Label;{trace.label}",
+        f"Label;{spreadsheet_safe(trace.label)}",
         f"Start (kHz);{round(float(freqs[0]) / 1e3)}",
         f"Stop (kHz);{round(float(freqs[-1]) / 1e3)}",
         f"Points;{len(freqs)}",

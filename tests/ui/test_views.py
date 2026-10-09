@@ -309,3 +309,16 @@ def test_plan_labels_are_staggered_below_the_channel_numbers() -> None:
     ys = [label_y(i, -120.0, -20.0) for i in range(5)]
     assert all(-120 < y < -25 for y in ys)  # inside the view, below the channel badges
     assert len(set(ys[:4])) == 4 and ys[4] == ys[0]
+
+
+def test_plot_capture_requests_made_while_one_is_pending_are_all_served() -> None:
+    from opencoord.ui.file_dialogs import FileUI
+
+    ui = FileUI(None, lambda: (0.0, 0.0, 1.0, 1.0))  # type: ignore[arg-type]
+    got: list[str] = []
+    ui.capture_plot(lambda _rgba: got.append("a"))
+    ui.capture_plot(lambda _rgba: got.append("b"))
+    assert ui._capture is not None
+    for done in ui._capture[1]:
+        done(None)
+    assert got == ["a", "b"]
