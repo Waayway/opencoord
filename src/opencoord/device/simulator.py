@@ -104,8 +104,12 @@ class SimulatedLink:
         sweep_points: int = _DEFAULT_POINTS,
         sweep_interval_s: float = 0.1,
         queue_size: int = _QUEUE_SIZE,
+        connect_delay_s: float = 0.0,
     ) -> None:
+        if sweep_points < 2:
+            raise ValueError("sweep_points must be at least 2")
         self._seed = seed
+        self._connect_delay = connect_delay_s
         self._points = sweep_points
         self._interval = sweep_interval_s
         self.sweeps: queue.Queue[Sweep] = queue.Queue(maxsize=queue_size)
@@ -117,6 +121,8 @@ class SimulatedLink:
         self._model: ModelInfo | None = None
         self._config: DeviceConfig | None = None
         self._capabilities: Capabilities | None = None
+        self._ready = threading.Event()
+        self._pending: tuple[int, int] | None = None
 
     @property
     def model(self) -> ModelInfo | None:
@@ -134,18 +140,23 @@ class SimulatedLink:
     def is_open(self) -> bool:
         return self._thread is not None and self._thread.is_alive()
 
-    def open(self) -> None:
+    def open(self, timeout_s: float = 5.0) -> None:
         if self.is_open:
             return
-        hint = models.MODELS[10]
-        self._model = ModelInfo(main_code=10, expansion_code=None, firmware="03.39")
-        config = self._make_config(hint.min_hz, hint.max_hz)
-        self._capabilities = models.resolve(self._model, config)
-        self._config = config
         self._stop.clear()
         self._holding.clear()
+        self._ready.clear()
+        self._pending = None
         self._thread = threading.Thread(target=self._run, name="simulated-link", daemon=True)
         self._thread.start()
+        if not self._ready.wait(timeout_s):
+            message = "Simulated RF Explorer did not report its configuration in time"
+            self._stop.set()
+            self._thread.join(timeout=2.0)
+            if not self._thread.is_alive():
+                self._thread = None
+            _queue_put_drop_oldest(self.events, LinkEvent("error", message))
+            raise ConnectionError(message)
         _queue_put_drop_oldest(
             self.events, LinkEvent("connected", "Simulated RF Explorer WSUB1G+ connected")
         )
@@ -156,24 +167,27 @@ class SimulatedLink:
             return
         self._stop.set()
         thread.join(timeout=2.0)
+        if thread.is_alive():  # still running: stay "open" rather than lie
+            return
         self._thread = None
         _queue_put_drop_oldest(self.events, LinkEvent("disconnected", "Simulator closed"))
 
     def set_span(self, start_hz: int, stop_hz: int) -> None:
-        """Clamp to the device limits and apply; like the real device this resumes sweeping."""
         if stop_hz <= start_hz:
             raise ValueError("stop must be greater than start")
         caps = self._capabilities
-        if caps is None:
+        if not self.is_open or caps is None:
             raise RuntimeError("simulator is not open")
+        min_span = self._points - 1  # at least 1 Hz per step
         start = max(start_hz, caps.min_hz)
         stop = min(stop_hz, caps.max_hz)
         if stop - start > caps.max_span_hz:
             stop = start + caps.max_span_hz
-        if stop <= start:
-            raise ValueError("range is outside the device limits")
+        if stop - start < min_span:
+            stop = min(start + min_span, caps.max_hz)
+            start = stop - min_span
         with self._lock:
-            self._config = self._make_config(start, stop)
+            self._pending = (start, stop)
         self._holding.clear()
 
     def hold(self) -> None:
@@ -206,11 +220,25 @@ class SimulatedLink:
         )
 
     def _run(self) -> None:
+        # Model and config arrive from the "device" on the worker thread, as with the real link.
+        if self._stop.wait(self._connect_delay):
+            return
+        hint = models.MODELS[10]
+        model = ModelInfo(main_code=10, expansion_code=None, firmware="03.39")
+        config = self._make_config(hint.min_hz, hint.max_hz)
+        with self._lock:
+            self._model = model
+            self._config = config
+            self._capabilities = models.resolve(model, config)
+        self._ready.set()
         t0 = time.monotonic()
         while not self._stop.is_set():
+            with self._lock:
+                pending, self._pending = self._pending, None
+                if pending is not None:
+                    self._config = self._make_config(*pending)  # the device "echoes" #C2-F
+                config = self._config
             if not self._holding.is_set():
-                with self._lock:
-                    config = self._config
                 assert config is not None
                 now = time.monotonic() - t0
                 samples = generate(

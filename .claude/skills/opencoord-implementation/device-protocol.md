@@ -92,6 +92,7 @@ each with a `.json` sidecar):
 - Implemented in `src/opencoord/device/simulator.py`; the shared interface is the `Link` Protocol in
   `device/link_api.py` (`open/close/set_span/hold/switch_module`, `model/config/capabilities/is_open`,
   `sweeps`/`events` queues carrying `Sweep`/`LinkEvent`).
+- Link contract (docstring of `Link`): `config` changes only on device confirmation (async; the simulator applies a pending span on its worker before the next sweep); `set_span` clamps silently, `ValueError` if start>=stop, `RuntimeError` if not open, resumes after `hold()`; `open()` blocks for model+config (timeout 5 s) then emits `connected`, else `ConnectionError` + `error` event; queues are not cleared on close; sweeps may predate the latest `set_span`, so check `sweep.start_hz/stop_hz`; non-retunable links may raise `NotImplementedError`.
 - `SimulatedLink(seed, sweep_points=112, sweep_interval_s=0.1, queue_size=64)`: WSUB1G+ (code 10, fw 03.39), daemon
   thread, queues drop the oldest item when full. `set_span` clamps to capabilities, builds a new `DeviceConfig`
   (step = round(span/(points-1))) and resumes after `hold()`. `switch_module(False)` emits an `error` event (no expansion).

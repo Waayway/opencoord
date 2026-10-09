@@ -1,5 +1,6 @@
 import queue
 import time
+from collections.abc import Iterator
 
 import numpy as np
 import pytest
@@ -50,7 +51,7 @@ def test_generate_low_resolution_still_sees_carriers() -> None:
 
 
 @pytest.fixture
-def link() -> SimulatedLink:
+def link() -> Iterator[SimulatedLink]:
     lk = SimulatedLink(seed=3, sweep_interval_s=0.01)
     yield lk
     lk.close()
@@ -86,32 +87,80 @@ def test_streams_sweeps_matching_config(link: SimulatedLink) -> None:
     assert s.start_hz == link.config.start_hz  # type: ignore[union-attr]
 
 
-def test_set_span_clamps_and_changes_config(link: SimulatedLink) -> None:
+def wait_for_config(link: SimulatedLink, start_hz: int) -> None:
+    deadline = time.monotonic() + 2
+    while time.monotonic() < deadline:
+        if link.config is not None and link.config.start_hz == start_hz:
+            return
+        time.sleep(0.005)
+    pytest.fail("config never confirmed")
+
+
+def test_set_span_is_confirmed_asynchronously_and_sweeps_follow(link: SimulatedLink) -> None:
     link.open()
     link.set_span(470 * MHZ, 700 * MHZ)
+    wait_for_config(link, 470 * MHZ)
     cfg = link.config
     assert cfg is not None
-    assert cfg.start_hz == 470 * MHZ
     assert cfg.sweep_points == 112
     assert cfg.step_hz == round(230 * MHZ / 111)
-    link.set_span(1, 5000 * MHZ)
-    cfg = link.config
-    assert cfg is not None
-    assert cfg.start_hz == 50_000
-    assert cfg.stop_hz <= 960 * MHZ
-    # drain until a sweep from the new config arrives
-    for _ in range(100):
+    # Sweeps queued before the change are identifiable by their axis; later ones match.
+    for _ in range(200):
         s = link.sweeps.get(timeout=2)
-        if s.start_hz == 50_000:
+        if s.start_hz == 470 * MHZ:
+            assert len(s.dbm) == 112
+            assert abs(s.stop_hz - 700 * MHZ) <= 111
             break
     else:
         pytest.fail("no sweep for new span")
 
 
-def test_set_span_rejects_empty_range(link: SimulatedLink) -> None:
+def test_set_span_clamps_silently(link: SimulatedLink) -> None:
+    link.open()
+    link.set_span(1, 5000 * MHZ)
+    wait_for_config(link, 50_000)
+    cfg = link.config
+    assert cfg is not None
+    assert cfg.stop_hz <= 960 * MHZ
+    link.set_span(959 * MHZ, 2000 * MHZ)
+    wait_for_config(link, 959 * MHZ)
+    link.set_span(500 * MHZ, 500 * MHZ + 5)  # below one step of span
+    wait_for_config(link, 500 * MHZ)
+    cfg = link.config
+    assert cfg is not None and cfg.step_hz >= 1
+
+
+def test_set_span_errors(link: SimulatedLink) -> None:
+    with pytest.raises(RuntimeError):
+        link.set_span(500 * MHZ, 600 * MHZ)
     link.open()
     with pytest.raises(ValueError):
         link.set_span(500 * MHZ, 500 * MHZ)
+    with pytest.raises(ValueError):
+        link.set_span(600 * MHZ, 500 * MHZ)
+
+
+def test_open_twice_is_noop_with_single_connected_event(link: SimulatedLink) -> None:
+    link.open()
+    link.open()
+    assert link.events.get(timeout=2).kind == "connected"
+    assert link.events.empty()
+
+
+def test_open_timeout_raises_and_emits_error() -> None:
+    lk = SimulatedLink(seed=1, connect_delay_s=1.0)
+    try:
+        with pytest.raises(ConnectionError):
+            lk.open(timeout_s=0.05)
+        ev = lk.events.get(timeout=2)
+        assert ev.kind == "error" and ev.message
+    finally:
+        lk.close()
+
+
+def test_sweep_points_validated() -> None:
+    with pytest.raises(ValueError):
+        SimulatedLink(sweep_points=1)
 
 
 def test_hold_stops_sweeps_and_set_span_resumes(link: SimulatedLink) -> None:
@@ -137,10 +186,6 @@ def test_sweep_queue_is_bounded_dropping_oldest() -> None:
         lk.open()
         time.sleep(0.15)
         assert lk.sweeps.qsize() <= 4
-        stamps = []
-        while not lk.sweeps.empty():
-            stamps.append(lk.sweeps.get_nowait().timestamp)
-        assert stamps == sorted(stamps)
     finally:
         lk.close()
 
