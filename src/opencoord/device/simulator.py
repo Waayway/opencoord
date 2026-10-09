@@ -15,7 +15,7 @@ import numpy.typing as npt
 
 from opencoord.core.types import DeviceConfig, ModelInfo, Sweep
 from opencoord.device import models
-from opencoord.device.link_api import LinkEvent, put_drop_oldest
+from opencoord.device.link_api import LinkEvent, check_sweep_points, put_drop_oldest
 from opencoord.device.models import Capabilities
 from opencoord.device.protocol import make_sweep
 
@@ -110,6 +110,7 @@ class SimulatedLink:
         self._capabilities: Capabilities | None = None
         self._ready = threading.Event()
         self._pending: tuple[int, int] | None = None
+        self._pending_points: int | None = None
 
     @property
     def model(self) -> ModelInfo | None:
@@ -134,6 +135,7 @@ class SimulatedLink:
         self._holding.clear()
         self._ready.clear()
         self._pending = None
+        self._pending_points = None
         self._thread = threading.Thread(target=self._run, name="simulated-link", daemon=True)
         self._thread.start()
         if not self._ready.wait(timeout_s):
@@ -176,6 +178,14 @@ class SimulatedLink:
         with self._lock:
             self._pending = (start, stop)
         self._holding.clear()
+
+    def set_sweep_points(self, points: int) -> None:
+        caps = self._capabilities
+        if not self.is_open or caps is None:
+            raise RuntimeError("simulator is not open")
+        check_sweep_points(points, caps)
+        with self._lock:
+            self._pending_points = points
 
     def hold(self) -> None:
         self._holding.set()
@@ -220,6 +230,10 @@ class SimulatedLink:
         while not self._stop.is_set():
             with self._lock:
                 pending, self._pending = self._pending, None
+                points, self._pending_points = self._pending_points, None
+                if points is not None and self._config is not None:
+                    self._points = points  # keeps start and span, like the device
+                    self._config = self._make_config(self._config.start_hz, self._config.stop_hz)
                 if pending is not None:
                     self._config = self._make_config(*pending)  # the device "echoes" #C2-F
                 config = self._config

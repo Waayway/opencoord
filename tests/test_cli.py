@@ -100,6 +100,29 @@ def test_sweep_rejects_bad_range() -> None:
     assert exc.value.code == 2
 
 
+def test_scan_writes_stitched_csv_and_summary(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    out = tmp_path / "scan.csv"
+    args = ["--simulator", "scan", "--start", "470", "--stop", "500", "--resolution", "fast"]
+    assert main([*args, "--csv", str(out)]) == 0
+    lines = out.read_text().splitlines()
+    assert lines[0] == "MHz,dBm"
+    freqs = [float(line.split(",")[0]) for line in lines[1:]]
+    assert freqs[0] == pytest.approx(470.0, abs=0.01)
+    assert freqs[-1] == pytest.approx(500.0, abs=0.2)
+    assert freqs == sorted(freqs)
+    err = capsys.readouterr().err
+    assert "fast" in err and "points" in err and "kHz bins" in err
+
+
+def test_scan_rejects_bad_range_and_resolution() -> None:
+    for bad in (["--start", "700", "--stop", "470"], ["--resolution", "ultra"]):
+        with pytest.raises(SystemExit) as exc:
+            main(["--simulator", "scan", "--start", "470", "--stop", "700", *bad])
+        assert exc.value.code == 2
+
+
 def test_no_command_is_usage_error() -> None:
     assert main([]) == 2
 

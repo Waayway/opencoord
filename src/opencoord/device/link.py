@@ -24,7 +24,7 @@ from typing import Literal, Protocol, cast
 
 from opencoord.core.types import DeviceConfig, ModelInfo, Sweep
 from opencoord.device import models, protocol
-from opencoord.device.link_api import LinkEvent, put_drop_oldest
+from opencoord.device.link_api import LinkEvent, check_sweep_points, put_drop_oldest
 from opencoord.device.models import Capabilities
 
 log = logging.getLogger(__name__)
@@ -203,13 +203,13 @@ def backoff_delays(initial_s: float, max_s: float) -> Iterator[float]:
 
 @dataclass(frozen=True)
 class _Command:
-    kind: Literal["set_config", "hold", "switch_module"]
+    kind: Literal["set_config", "set_sweep_points", "hold", "switch_module"]
     data: bytes
 
     @property
     def confirmed_by_config(self) -> bool:
         """The device answers with ``#C2-F``, so the next command waits for it."""
-        return self.kind == "set_config"
+        return self.kind in ("set_config", "set_sweep_points")
 
 
 @dataclass
@@ -344,6 +344,14 @@ class SerialLink:
             start, stop, round(config.amp_top_dbm), round(config.amp_bottom_dbm)
         )
         self._commands.put(_Command("set_config", data))
+
+    def set_sweep_points(self, points: int) -> None:
+        with self._lock:
+            caps = self._capabilities
+        if not self.is_open or caps is None:
+            raise RuntimeError("RF Explorer is not open")
+        check_sweep_points(points, caps)
+        self._commands.put(_Command("set_sweep_points", protocol.set_sweep_points(points)))
 
     def hold(self) -> None:
         if self.is_open:

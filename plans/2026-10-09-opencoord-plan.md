@@ -428,7 +428,7 @@ Each item is decided at the phase where it can be judged with a working build:
 | # | Question | Decide in | Default until then |
 |---|---|---|---|
 | 4 | Exact WWB / Sennheiser WSM CSV import formats | Phase 6 (verify by importing real exports) | Implement both from public format notes; keep the generic `MHz,dBm` CSV |
-| 7 | Final scan resolution / time defaults | Phase 3 (measure on WSUB1G+) | Normal preset targets about 60 s for 470–960 MHz |
+| 7 | Final scan resolution / time defaults | Phase 3 (measure on WSUB1G+) | **Presets set from measured WSUB1G+ sweep rates (Task 12):** Fast 20 MHz × 1 @ 112 pts (180 kHz bins, ~15 s), Normal 40 MHz × 3 @ 512 pts (78 kHz bins, RBW 95 kHz, ~58 s est.), Fine 20 MHz × 2 @ 512 pts (39 kHz bins, ~2 min). End-to-end timing of a real Normal 470–960 MHz scan still to confirm (device dropped off USB during Task 12) before moving this to Decided |
 | 8 | macOS signing / notarisation; Intel-Mac build | Phase 9 | Ad-hoc signed arm64 DMG; Intel only if a GitHub runner is available |
 | 11 | Publish to PyPI | Phase 9 | GitHub Releases only; the `uv build` wheel is attached to the release |
 | 12 | Importing existing scans as fixtures | Phase 6 | Generic CSV + RF Explorer for Windows CSV importers; add user files as fixtures when provided |

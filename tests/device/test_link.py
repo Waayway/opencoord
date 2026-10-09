@@ -82,12 +82,15 @@ class FakeSerial:
         self.closed = True
 
 
-def config_line(start_khz: int, step_hz: int, top: int = -10, bottom: int = -120) -> bytes:
-    return b"#C2-F:%07d,%07d,%04d,%04d,0112,0,000,0000050,0960000,0959950,00110,0000,004\r\n" % (
+def config_line(
+    start_khz: int, step_hz: int, top: int = -10, bottom: int = -120, points: int = 112
+) -> bytes:
+    return b"#C2-F:%07d,%07d,%04d,%04d,%04d,0,000,0000050,0960000,0959950,00110,0000,004\r\n" % (
         start_khz,
         step_hz,
         top,
         bottom,
+        points,
     )
 
 
@@ -113,6 +116,9 @@ def device(*, ignore_set_config: int = 0) -> Responder:
             start, stop = int(m[1]), int(m[2])
             step = round((stop - start) * 1000 / 111)
             return config_line(start, step, int(m[3]), int(m[4])) + sweep_frame()
+        if cmd.startswith(b"#\x05CJ"):  # set sweep points: the device keeps start and span
+            points = cmd[4] * 16 + 16
+            return config_line(431_000, round(10_000_000 / (points - 1)), points=points)
         return b""
 
     return respond
@@ -486,6 +492,33 @@ def test_hold_then_set_span_resumes(links: list[SerialLink]) -> None:
         protocol.hold(),
         protocol.set_config(470 * MHZ, 700 * MHZ, -10, -120),
     ]
+
+
+def test_set_sweep_points_waits_for_the_config_echo(links: list[SerialLink]) -> None:
+    fake = FakeSerial(device())
+    link = opened(links, fake)
+    link.set_sweep_points(512)
+    link.set_span(470 * MHZ, 700 * MHZ)
+    wait_for(lambda: link.config is not None and link.config.start_hz == 470 * MHZ)
+    assert fake.written[1:] == [
+        protocol.set_sweep_points(512),
+        protocol.set_config(470 * MHZ, 700 * MHZ, -10, -120),
+    ]
+    caps = link.capabilities
+    assert caps is not None and caps.max_span_hz == 959_950_000
+
+
+def test_set_sweep_points_confirmed_and_validated(links: list[SerialLink]) -> None:
+    link = make_link(Factory(FakeSerial(device())))
+    links.append(link)
+    with pytest.raises(RuntimeError):
+        link.set_sweep_points(512)
+    link.open()
+    for bad in (100, 4097, 8192):
+        with pytest.raises(ValueError):
+            link.set_sweep_points(bad)
+    link.set_sweep_points(512)
+    wait_for(lambda: link.config is not None and link.config.sweep_points == 512)
 
 
 def test_switch_module_without_expansion_reports_error(links: list[SerialLink]) -> None:

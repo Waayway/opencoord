@@ -1,4 +1,4 @@
-"""Headless command line interface (``opencoord-cli``): info, sweep and record."""
+"""Headless command line interface (``opencoord-cli``): info, sweep, scan and record."""
 
 from __future__ import annotations
 
@@ -14,12 +14,14 @@ from pathlib import Path
 from typing import IO, Any
 
 import numpy as np
+import numpy.typing as npt
 
 from opencoord import __version__
 from opencoord.core.types import Sweep
 from opencoord.device import link as serial_link
 from opencoord.device.link import SerialLink
 from opencoord.device.link_api import Link
+from opencoord.device.scanner import Resolution, SegmentedScanner
 from opencoord.device.simulator import SimulatedLink
 
 EXIT_OK = 0
@@ -29,6 +31,8 @@ EXIT_USAGE = 2
 _MHZ = 1_000_000
 _CONFIRM_TIMEOUT_S = 5.0
 _SWEEP_TIMEOUT_S = 10.0
+_SCAN_POLL_S = 0.02
+_SCAN_MIN_TIMEOUT_S = 30.0
 
 
 class CliError(Exception):
@@ -53,6 +57,14 @@ def build_parser() -> argparse.ArgumentParser:
     sweep.add_argument("--max-hold", action="store_true", help="output one max-hold table")
     sweep.add_argument("--csv", type=Path, metavar="FILE", help="write to FILE instead of stdout")
 
+    scan = sub.add_parser("scan", help="segmented scan, printed as one stitched MHz,dBm table")
+    scan.add_argument("--start", type=float, required=True, metavar="MHZ")
+    scan.add_argument("--stop", type=float, required=True, metavar="MHZ")
+    scan.add_argument(
+        "--resolution", choices=[r.value for r in Resolution], default=Resolution.NORMAL.value
+    )
+    scan.add_argument("--csv", type=Path, metavar="FILE", help="write to FILE instead of stdout")
+
     record = sub.add_parser("record", help="record the raw device byte stream for a fixture")
     record.add_argument("--raw", type=Path, required=True, metavar="FILE")
     record.add_argument("--seconds", type=float, required=True, metavar="S")
@@ -73,11 +85,10 @@ def main(
     logging.basicConfig(
         level=logging.DEBUG if args.verbose else logging.WARNING, format="%(name)s: %(message)s"
     )
-    if args.command == "sweep":
-        if args.start >= args.stop:
-            parser.error("--start must be less than --stop")
-        if args.count < 1:
-            parser.error("--count must be at least 1")
+    if args.command in ("sweep", "scan") and args.start >= args.stop:
+        parser.error("--start must be less than --stop")
+    if args.command == "sweep" and args.count < 1:
+        parser.error("--count must be at least 1")
     if args.command == "record":
         if args.simulator:
             parser.error("record needs a real device: the simulator has no raw bytes")
@@ -97,6 +108,8 @@ def main(
             link.open()
             if args.command == "info":
                 return _info(link, args.json)
+            if args.command == "scan":
+                return _scan(link, args)
             return _sweep(link, args)
         finally:
             link.close()
@@ -228,6 +241,48 @@ def _sweep(link: Link, args: argparse.Namespace) -> int:
     else:
         _write_rows(sys.stdout, sweeps, args.max_hold)
     return EXIT_OK
+
+
+# --- scan ----------------------------------------------------------------------------------------
+
+
+def _scan(link: Link, args: argparse.Namespace) -> int:
+    start_hz, stop_hz = round(args.start * _MHZ), round(args.stop * _MHZ)
+    scanner = SegmentedScanner(link, start_hz, stop_hz, Resolution(args.resolution))
+    estimate = scanner.estimate_seconds()
+    began = time.monotonic()
+    deadline = began + max(3 * estimate, _SCAN_MIN_TIMEOUT_S)
+    progress = scanner.step()
+    while not progress.done:
+        if time.monotonic() > deadline:
+            scanner.cancel()
+            raise CliError(f"scan stalled at segment {progress.segment_index + 1}")
+        time.sleep(_SCAN_POLL_S)
+        progress = scanner.step()
+    trace = scanner.result
+    assert trace is not None
+    elapsed = time.monotonic() - began
+    if args.csv is not None:
+        with args.csv.open("w", newline="") as f:
+            _write_trace(f, trace.freqs_hz, trace.dbm)
+    else:
+        _write_trace(sys.stdout, trace.freqs_hz, trace.dbm)
+    bin_khz = float(np.median(np.diff(trace.freqs_hz))) / 1000 if len(trace.freqs_hz) > 1 else 0
+    print(
+        f"{args.resolution} scan {args.start:g}-{args.stop:g} MHz: {len(trace.dbm)} points, "
+        f"{bin_khz:.1f} kHz bins, {progress.segment_count} segments, {elapsed:.1f} s "
+        f"(estimated {estimate:.0f} s)",
+        file=sys.stderr,
+    )
+    return EXIT_OK
+
+
+def _write_trace(
+    out: IO[str], freqs_hz: npt.NDArray[np.float64], dbm: npt.NDArray[np.float32]
+) -> None:
+    out.write("MHz,dBm\n")
+    for f, d in zip(freqs_hz, dbm, strict=True):
+        out.write(f"{f / _MHZ:.6f},{d:.1f}\n")
 
 
 # --- record --------------------------------------------------------------------------------------

@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from typing import Literal, Protocol, TypeVar
 
 from opencoord.core.types import DeviceConfig, ModelInfo, Sweep
+from opencoord.device import protocol
 from opencoord.device.models import Capabilities
 
 _T = TypeVar("_T")
@@ -22,6 +23,13 @@ def put_drop_oldest(q: queue.Queue[_T], item: _T) -> None:
         except queue.Full:
             with contextlib.suppress(queue.Empty):
                 q.get_nowait()
+
+
+def check_sweep_points(points: int, caps: Capabilities) -> None:
+    """Raise ``ValueError`` unless the device can be set to ``points`` points per sweep."""
+    protocol.set_sweep_points(points)  # raises for counts the protocol cannot encode
+    if points > caps.sweep_points_max:
+        raise ValueError(f"{caps.name} supports at most {caps.sweep_points_max} sweep points")
 
 
 @dataclass(frozen=True)
@@ -48,6 +56,11 @@ class Link(Protocol):
     - ``set_span`` silently clamps to the capabilities (and to at least one step of span). It raises
       ``ValueError`` if ``start_hz >= stop_hz`` and ``RuntimeError`` if the link is not open. It
       also resumes sweeping after ``hold()``.
+    - ``set_sweep_points(n)`` changes the number of points per sweep, keeping start and span; it is
+      confirmed asynchronously like ``set_span`` (``config.sweep_points`` changes when the device
+      confirms). It raises ``ValueError`` for a count the device cannot take (not encodable, or
+      above ``capabilities.sweep_points_max``) and ``RuntimeError`` if the link is not open. On
+      the real device more points also lower ``capabilities.max_span_hz`` (342.37 MHz at 512).
     - ``hold()`` pauses sweeping; ``switch_module(main)`` selects the main or expansion module.
     - Links that cannot retune (e.g. a replay of a recording) may raise ``NotImplementedError``
       from ``set_span``, ``hold`` and ``switch_module``.
@@ -78,6 +91,8 @@ class Link(Protocol):
     def close(self) -> None: ...
 
     def set_span(self, start_hz: int, stop_hz: int) -> None: ...
+
+    def set_sweep_points(self, points: int) -> None: ...
 
     def hold(self) -> None: ...
 

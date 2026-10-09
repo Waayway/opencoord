@@ -163,6 +163,36 @@ def test_sweep_points_validated() -> None:
         SimulatedLink(sweep_points=1)
 
 
+def test_set_sweep_points_is_confirmed_asynchronously_and_keeps_span(link: SimulatedLink) -> None:
+    link.open()
+    link.set_span(470 * MHZ, 490 * MHZ)
+    wait_for_config(link, 470 * MHZ)
+    link.set_sweep_points(512)
+    deadline = time.monotonic() + 2
+    while link.config is not None and link.config.sweep_points != 512:
+        assert time.monotonic() < deadline, "sweep points never confirmed"
+        time.sleep(0.005)
+    cfg = link.config
+    assert cfg is not None
+    assert cfg.start_hz == 470 * MHZ and cfg.step_hz == round(20 * MHZ / 511)
+    for _ in range(200):
+        s = link.sweeps.get(timeout=2)
+        if len(s.dbm) == 512:
+            assert s.start_hz == 470 * MHZ and abs(s.stop_hz - 490 * MHZ) <= 511
+            break
+    else:
+        pytest.fail("no 512-point sweep")
+
+
+def test_set_sweep_points_errors(link: SimulatedLink) -> None:
+    with pytest.raises(RuntimeError):
+        link.set_sweep_points(512)
+    link.open()
+    for bad in (100, 4097, 8192):  # not encodable / above the model's 4096
+        with pytest.raises(ValueError):
+            link.set_sweep_points(bad)
+
+
 def test_hold_stops_sweeps_and_set_span_resumes(link: SimulatedLink) -> None:
     link.open()
     link.sweeps.get(timeout=2)

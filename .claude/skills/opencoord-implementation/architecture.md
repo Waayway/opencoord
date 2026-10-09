@@ -4,12 +4,12 @@
 ```
 src/opencoord/
   __main__.py        python -m opencoord → ui.app.main()
-  cli.py             opencoord-cli: info [--json] | sweep | record (debug / headless)
+  cli.py             opencoord-cli: info [--json] | sweep | scan | record (debug / headless)
   device/
     protocol.py      pure: command builders + incremental byte parser → events (SweepData, ConfigReply, ModelReply, Unknown, ParseError); make_sweep()
     models.py        pure: model code → Capabilities (name, min/max Hz, max span, sweep-point limits, plus/expansion)
     link.py          SerialLink thread: discover, open, baud detect, request config, stream, reconnect (done)
-    scanner.py       SegmentedScanner: drives a link (or simulator) across segments, stitches traces
+    scanner.py       SegmentedScanner (done): non-blocking step() drives a link across segments, stitches traces
     link_api.py      Link Protocol + LinkEvent(kind, message) (done)
     simulator.py     SimulatedLink + pure generate(): same interface as SerialLink, synthetic spectra (done)
   core/
@@ -29,7 +29,7 @@ src/opencoord/
     app.py, spectrum.py, waterfall.py, theme.py, shortcuts.py, panels/*.py
 ```
 Implemented so far: `__init__.py` (`__version__`), `__main__.py`, `cli.py`, `ui/app.py`, `core/{types,traces}.py`,
-`device/{protocol,models,link_api,simulator,link}.py`; the rest of the tree
+`device/{protocol,models,link_api,simulator,link,scanner}.py`; the rest of the tree
 is still to be written. `io/` is deliberately named like the stdlib module; all imports are absolute so it is safe.
 
 The project uses the `src/` layout so tests always run against the installed package.
