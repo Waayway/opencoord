@@ -49,8 +49,14 @@ class Analysis:
     occupancy: tuple[ChannelOccupancy, ...]
 
 
-def analyze(trace: Trace, plan: PlanLike | None, threshold_dbm: float | None) -> Analysis | None:
+def analyze(
+    trace: Trace,
+    plan: PlanLike | None,
+    threshold_dbm: float | None,
+    max_rows: int | None = MAX_CARRIER_ROWS,
+) -> Analysis | None:
     """Analyse ``trace``; ``None`` for an empty trace.
+    ``max_rows`` caps the carriers (``None`` = all).
 
     The threshold is ``threshold_dbm`` when given, else the noise floor plus 10 dB.
     """
@@ -59,8 +65,8 @@ def analyze(trace: Trace, plan: PlanLike | None, threshold_dbm: float | None) ->
     floor = noise_floor(trace.dbm)
     threshold_db = DEFAULT_CARRIER_THRESHOLD_DB if threshold_dbm is None else threshold_dbm - floor
     carriers = detected_carriers(trace, floor, threshold_db)
-    if len(carriers) > MAX_CARRIER_ROWS:
-        carriers = sorted(carriers, key=lambda c: c.level_dbm, reverse=True)[:MAX_CARRIER_ROWS]
+    if max_rows is not None and len(carriers) > max_rows:
+        carriers = sorted(carriers, key=lambda c: c.level_dbm, reverse=True)[:max_rows]
         carriers.sort(key=lambda c: c.freq_hz)
     rows = []
     for carrier in carriers:
