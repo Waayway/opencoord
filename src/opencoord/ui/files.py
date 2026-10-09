@@ -25,8 +25,10 @@ import numpy.typing as npt
 from opencoord import __version__
 from opencoord.core import session as session_io
 from opencoord.core.analysis import analyze
+from opencoord.core.markers import MAX_MARKERS, Marker
 from opencoord.core.session import DeviceInfo, Session, SessionError, SessionSettings
-from opencoord.core.types import Trace
+from opencoord.core.types import ExclusionZone, Trace
+from opencoord.core.zones import MAX_EXCLUSION_ZONES
 from opencoord.device.scanner import Resolution
 from opencoord.io import export_scan, importers
 from opencoord.ui.controller import MAX_REFERENCES, Controller
@@ -78,7 +80,7 @@ class FileActions:
 
     # --- helpers -----------------------------------------------------------------------------
 
-    def _say(self, message: str) -> None:
+    def say(self, message: str) -> None:
         st = self.controller.state
         st.message = message
         st.ui_version += 1
@@ -131,32 +133,30 @@ class FileActions:
         try:
             session_io.save(target, session)
         except OSError as exc:
-            self._say(f"Cannot save {target.name}: {exc.strerror or exc}")
+            self.say(f"Cannot save {target.name}: {exc.strerror or exc}")
             return False
         self.path, self._created = target, session.created
-        self._say(f"Saved {target}")
+        self.say(f"Saved {target}")
         return True
 
     def open(self, path: Path) -> bool:
         st = self.controller.state
-        if st.stopping:
-            self._say("Wait for the scan to stop before opening a session")
+        if st.busy:
+            self.say("Stop the scan before opening a session")
             return False
         try:
             session = session_io.load(path)
         except SessionError as exc:
-            self._say(str(exc))
+            self.say(str(exc))
             return False
         self.apply_session(session)
         self.path, self._created = path, session.created or None
-        self._say(f"Opened {path.name}")
+        self.say(f"Opened {path.name}")
         return True
 
     def apply_session(self, session: Session) -> None:
         c = self.controller
         st = c.state
-        if st.running:
-            c.stop()
         s = session.settings
         c.set_mode("scan" if s.mode == "scan" else "live")
         try:
@@ -168,9 +168,9 @@ class FileActions:
         st.overlay_enabled = s.overlay_enabled
         if s.channel_plan and (st.channel_plan is None or st.channel_plan.name != s.channel_plan):
             c.set_channel_plan(s.channel_plan)
-        st.markers = list(session.markers)
+        st.markers = _valid_markers(session.markers)
         st.selected_marker = st.delta_reference = None
-        st.exclusion_zones = list(session.exclusion_zones)
+        st.exclusion_zones = _valid_zones(session.exclusion_zones)
 
         st.traces.reset()
         held = {k: _read_only(session.traces[k]) for k in _HELD_KEYS if k in session.traces}
@@ -181,6 +181,7 @@ class FileActions:
         st.scan_partial = _read_only(session.traces["scan"]) if "scan" in session.traces else None
         refs = {k: _read_only(t) for k, t in session.traces.items() if _is_reference(k)}
         st.references = dict(sorted(refs.items()))
+        st.markers = [m for m in st.markers if m.trace_key in st.trace_map()]
         st.hidden_traces.clear()
         st.waterfall.clear()
         st.trace_version += 1
@@ -206,9 +207,9 @@ class FileActions:
                 trace = self._trace(trace_key)
                 export_scan.write_text(path, self._text(fmt.key, trace))
         except (ValueError, OSError) as exc:
-            self._say(f"Export failed: {getattr(exc, 'strerror', None) or exc}")
+            self.say(f"Export failed: {getattr(exc, 'strerror', None) or exc}")
             return False
-        self._say(f"Exported {path}")
+        self.say(f"Exported {path}")
         return True
 
     def _trace(self, key: str) -> Trace:
@@ -234,20 +235,43 @@ class FileActions:
         """Import a scan file (any supported CSV) as a new reference trace."""
         st = self.controller.state
         if len(st.references) >= MAX_REFERENCES:
-            self._say(f"At most {MAX_REFERENCES} reference traces; remove one first")
+            self.say(f"At most {MAX_REFERENCES} reference traces; remove one first")
             return False
         try:
             trace = importers.import_file(path)
         except (ValueError, OSError) as exc:
-            self._say(f"Cannot import {path.name}: {getattr(exc, 'strerror', None) or exc}")
+            self.say(f"Cannot import {path.name}: {getattr(exc, 'strerror', None) or exc}")
             return False
         n = next(i for i in range(1, MAX_REFERENCES + 1) if f"ref{i}" not in st.references)
         trace = Trace(trace.freqs_hz, trace.dbm, f"Ref {n}: {trace.label}")
         st.references = dict(sorted({**st.references, f"ref{n}": _read_only(trace)}.items()))
         st.trace_version += 1
         st.ui_version += 1
-        self._say(f"Imported {path.name} as reference {n} ({len(trace.freqs_hz)} points)")
+        self.say(f"Imported {path.name} as reference {n} ({len(trace.freqs_hz)} points)")
         return True
+
+
+def _valid_markers(markers: list[Marker]) -> list[Marker]:
+    """At most ``MAX_MARKERS`` markers with distinct ids >= 1 (first wins)."""
+    seen: set[int] = set()
+    out: list[Marker] = []
+    for m in markers:
+        if m.id >= 1 and m.id not in seen and len(out) < MAX_MARKERS:
+            seen.add(m.id)
+            out.append(m)
+    return out
+
+
+def _valid_zones(zones: list[ExclusionZone]) -> list[ExclusionZone]:
+    """Zones with ``0 <= start < stop`` and distinct ids 1..``MAX_EXCLUSION_ZONES``, by id."""
+    seen: set[int] = set()
+    out: list[ExclusionZone] = []
+    for z in zones:
+        ok = 1 <= z.id <= MAX_EXCLUSION_ZONES and 0 <= z.start_hz < z.stop_hz
+        if ok and z.id not in seen:
+            seen.add(z.id)
+            out.append(z)
+    return sorted(out, key=lambda z: z.id)
 
 
 def _is_reference(key: str) -> bool:

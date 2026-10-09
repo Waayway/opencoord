@@ -97,4 +97,4 @@ UI "Coordinate" ──▶ worker thread: solver.solve(profiles, trace, exclusion
   `settings` (start/stop Hz, mode, preset, resolution, threshold_dbm, overlay_enabled, channel_plan), trace labels,
   `markers`, `exclusion_zones`, `plan` (null, reserved for Task 22). A newer `schema_version` raises
   `SessionError` ("update OpenCoord"); missing optional fields use defaults; bad zip/JSON/arrays raise
-  `SessionError` with a user-facing message. Saves are atomic (`io/atomic.py`). See `io-formats.md`.
+  `SessionError` with a user-facing message (corrupt deflate, unsupported compression, missing members, > 256 MB uncompressed). Saves are atomic and fsynced (`io/atomic.py`). Applied content is validated by `FileActions` (<= 8 markers, <= 16 valid zones, unique ids, markers on unknown traces dropped). See `io-formats.md`.

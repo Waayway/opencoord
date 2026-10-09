@@ -148,6 +148,22 @@ def test_live_and_scan_against_the_simulator(tmp_path: Path) -> None:
         assert dpg.get_item_configuration("overlay.zone.0")["show"]  # zones stay drawn
         for tab in ("markers", "analysis", "coordination", "profiles"):
             assert dpg.does_item_exist(f"tab.{tab}")
+        # Item callbacks run on the UI thread (manual callback management).
+        import threading
+
+        seen: list[int] = []
+        with dpg.window(tag="cb.test", show=False):
+            dpg.add_button(tag="cb.button", callback=lambda *_: seen.append(threading.get_ident()))
+        dpg.configure_item("cb.button", callback=lambda *_: seen.append(threading.get_ident()))
+        with dpg.handler_registry():
+            dpg.add_key_press_handler(dpg.mvKey_F24, callback=lambda *_: None)
+        dpg.get_item_callback("cb.button")(None, None)  # direct call is trivially on this thread
+        with dpg.item_handler_registry(tag="cb.handlers"):
+            dpg.add_item_visible_handler(callback=lambda *_: seen.append(threading.get_ident()))
+        dpg.bind_item_handler_registry("main", "cb.handlers")
+        for _ in range(3):
+            assert app.frame()
+        assert len(seen) > 1 and set(seen) == {threading.get_ident()}
         # Sessions, export window, file dialog and the PNG plot capture.
         session = tmp_path / "smoke.opencoord"
         assert app.files.save(session)

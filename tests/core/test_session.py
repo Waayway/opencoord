@@ -1,3 +1,4 @@
+import contextlib
 import json
 import zipfile
 from pathlib import Path
@@ -127,6 +128,66 @@ def test_mismatched_trace_arrays_rejected() -> None:
     arrays["max"] = (arrays["max"][0], arrays["max"][1][:2])
     with pytest.raises(SessionError):
         ses.build_traces({"max": "M"}, arrays)
+
+
+def _saved(tmp_path: Path) -> bytes:
+    ses.save(tmp_path / "ok.opencoord", full_session())
+    return (tmp_path / "ok.opencoord").read_bytes()
+
+
+def test_truncated_zip(tmp_path: Path) -> None:
+    data = _saved(tmp_path)
+    p = tmp_path / "t.opencoord"
+    for cut in (10, len(data) // 2, len(data) - 5):
+        p.write_bytes(data[:cut])
+        with pytest.raises(SessionError):
+            ses.load(p)
+
+
+def test_every_flipped_byte_is_a_session_error_or_loads(tmp_path: Path) -> None:
+    data = bytearray(_saved(tmp_path))
+    p = tmp_path / "f.opencoord"
+    for i in range(0, len(data), 7):
+        broken = bytearray(data)
+        broken[i] ^= 0xFF
+        p.write_bytes(bytes(broken))
+        with contextlib.suppress(SessionError):  # anything else escaping fails the test
+            ses.load(p)
+
+
+def test_corrupt_deflate_stream_in_npz(tmp_path: Path) -> None:
+    blob = bytearray(ses.encode_traces({"max": trace("M", 200)}))
+    blob[len(blob) // 2] ^= 0xFF
+    p = tmp_path / "c.opencoord"
+    with zipfile.ZipFile(p, "w") as z:
+        z.writestr("session.json", '{"schema_version": 1}')
+        z.writestr("traces.npz", bytes(blob))
+    with contextlib.suppress(SessionError):
+        ses.load(p)
+
+
+def test_unsupported_compression_and_garbage_npz(tmp_path: Path) -> None:
+    p = tmp_path / "bz.opencoord"
+    with zipfile.ZipFile(p, "w", zipfile.ZIP_BZIP2) as z:
+        z.writestr("session.json", '{"schema_version": 1}')
+    assert ses.load(p).markers == []  # bzip2 is supported by zipfile
+    with zipfile.ZipFile(p, "w") as z:
+        z.writestr("session.json", '{"schema_version": 1}')
+        z.writestr("traces.npz", b"garbage")
+    with pytest.raises(SessionError, match="unreadable"):
+        ses.load(p)
+
+
+def test_oversize_session_refused(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(ses, "MAX_UNCOMPRESSED_BYTES", 100)
+    ses.save(tmp_path / "big.opencoord", full_session())
+    with pytest.raises(SessionError, match="too large"):
+        ses.load(tmp_path / "big.opencoord")
+
+
+def test_non_finite_threshold_is_dropped() -> None:
+    s = from_json('{"schema_version": 1, "settings": {"threshold_dbm": NaN}}')
+    assert s.settings.threshold_dbm is None
 
 
 @given(

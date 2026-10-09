@@ -201,6 +201,6 @@ class FileUI:
             rgba = crop_to_rect(frame, *self._plot_rect())
         except (ValueError, KeyError, SystemError):
             log.warning("could not read the frame buffer", exc_info=True)
-            self.files.export("png", "", path, None)
+            self.files.say("Cannot read the screen image; the PNG export failed")
             return
         self.files.export("png", "", path, np.ascontiguousarray(rgba))

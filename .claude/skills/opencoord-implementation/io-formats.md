@@ -20,7 +20,7 @@ See `architecture.md` "Persistence". Pure: `to_json`, `from_json(text, arrays)`,
 - Unit autodetect from the **largest** frequency: `< 10 000` MHz, `< 10 000 000` kHz, else Hz. Ambiguity: a kHz file
   spanning only up to 9.999 MHz is read as MHz (pass `unit=` to force). Result is sorted, duplicates dropped (first wins).
 - `470000;;-106` (empty middle field, level in the third) is accepted (WSM-like simple form).
-- No data -> `ValueError("No scan data found ...")`.
+- Exports skip non-finite points. No data -> `ValueError("No scan data found ...")`.
 
 ## Shure Wireless Workbench CSV (`wwb_csv`) - confidence: medium
 Source: Shure WWB7 manual, "Scanning" / "Upload Scans" pages (content-files.shure.com/Pubs/WWB): `.csv`, `.txt` or

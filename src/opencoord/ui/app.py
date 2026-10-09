@@ -152,6 +152,8 @@ class App:
     def build(self) -> None:
         title = f"OpenCoord {__version__}"
         dpg.create_context()
+        # Run every item/handler callback on this thread, from frame(), never on DPG's own thread.
+        dpg.configure_app(manual_callback_management=True)
         self._built = True
         theme.apply()
         with dpg.value_registry():
@@ -215,8 +217,16 @@ class App:
             }
         )
         self.controller.startup()
-        if self._session_arg is not None and not self.files.open(self._session_arg):
-            log.warning("could not open %s: %s", self._session_arg, self.controller.state.message)
+        if self._session_arg is not None:
+            try:
+                opened = self.files.open(self._session_arg)
+            except Exception:  # a bad file must never abort the start
+                log.exception("unexpected error opening %s", self._session_arg)
+                opened = False
+            if not opened:
+                log.warning(
+                    "could not open %s: %s", self._session_arg, self.controller.state.message
+                )
         self._started = time.perf_counter()
 
     def _build_toolbar(self) -> None:
@@ -254,6 +264,12 @@ class App:
                 label="Reset max hold", tag="toolbar.reset", callback=lambda: c.reset_max_hold()
             )
 
+    def run_callbacks(self) -> None:
+        """Run the callbacks DPG queued since the last frame (UI thread, manual management)."""
+        jobs = dpg.get_callback_queue()
+        if jobs:
+            dpg.run_callbacks(jobs)
+
     def plot_rect(self) -> tuple[float, float, float, float]:
         """``(x, y, width, height)`` of the plot area (readout line, spectrum, waterfall)."""
         x, y = dpg.get_item_rect_min(TAG_READOUT)
@@ -267,6 +283,7 @@ class App:
             return False
         t0 = time.perf_counter()
         self.controller.tick()
+        self.run_callbacks()
         state = self.controller.state
         self.device_panel.update(state)
         self.scan_panel.update(state)

@@ -34,9 +34,16 @@ WSM_HEADER_COLUMNS: Final = "Frequency;RF level (%);RF level;Memory (%);Memory;S
 WSM_PREAMBLE_LINES: Final = 6
 
 
-def _check(trace: Trace) -> None:
-    if len(trace.freqs_hz) == 0 or len(trace.freqs_hz) != len(trace.dbm):
+def _clean(trace: Trace) -> Trace:
+    """``trace`` minus non-finite points (skipped); ``ValueError`` if none remain."""
+    if len(trace.freqs_hz) != len(trace.dbm):
         raise ValueError("The trace has no data to export")
+    ok = np.isfinite(trace.freqs_hz) & np.isfinite(trace.dbm)
+    if not ok.any():
+        raise ValueError("The trace has no data to export")
+    if ok.all():
+        return trace
+    return Trace(trace.freqs_hz[ok], trace.dbm[ok], trace.label)
 
 
 def _mhz(hz: float, decimals: int = 6) -> str:
@@ -44,7 +51,7 @@ def _mhz(hz: float, decimals: int = 6) -> str:
 
 
 def generic_csv(trace: Trace) -> str:
-    _check(trace)
+    trace = _clean(trace)
     lines = [GENERIC_HEADER]
     lines += [
         f"{_mhz(f)},{d:.1f}"
@@ -69,16 +76,16 @@ def _decimate(
 
 
 def wwb_csv(trace: Trace) -> str:
-    """Shure WWB scan import: ``470.000, -109.0`` lines, no header, resampled to >= 25 kHz."""
-    _check(trace)
+    """Shure WWB scan import: ``470.000, -109.0`` lines, no header, >= 25 kHz step."""
+    trace = _clean(trace)
     freqs, dbm = _decimate(trace, WWB_MIN_STEP_HZ)
     lines = [f"{_mhz(f, 3)}, {d:.1f}" for f, d in zip(freqs.tolist(), dbm.tolist(), strict=True)]
     return "\n".join(lines) + "\n"
 
 
 def wsm_csv(trace: Trace) -> str:
-    """Sennheiser WSM scan layout: preamble, column header, ``kHz;RF level (%);level;0;0;0;0``."""
-    _check(trace)
+    """Sennheiser WSM layout: preamble, column header, ``kHz;RF level (%);dBm;0;0;0;0``."""
+    trace = _clean(trace)
     freqs, dbm = _decimate(trace, WWB_MIN_STEP_HZ)
     lines = [
         "OpenCoord scan export",

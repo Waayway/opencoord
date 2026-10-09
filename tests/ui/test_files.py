@@ -7,7 +7,7 @@ from pathlib import Path
 
 import numpy as np
 
-from opencoord.core.types import Sweep
+from opencoord.core.types import Sweep, Trace
 from opencoord.device.scanner import Resolution
 from opencoord.device.simulator import SimulatedLink
 from opencoord.ui.controller import Controller
@@ -67,7 +67,7 @@ def test_save_open_round_trip(tmp_path: Path) -> None:
     assert "Opened" in b.message
 
 
-def test_open_does_not_touch_device_and_stops_acquisition(tmp_path: Path) -> None:
+def test_open_refused_while_acquiring_then_works_when_idle(tmp_path: Path) -> None:
     c1, f1 = make()
     configure(c1)
     assert f1.save(tmp_path / "a.opencoord")
@@ -81,9 +81,12 @@ def test_open_does_not_touch_device_and_stops_acquisition(tmp_path: Path) -> Non
     c2.set_mode("live")
     c2.start()
     assert c2.state.running
+    assert not f2.open(tmp_path / "a.opencoord")
+    assert c2.state.message == "Stop the scan before opening a session"
+    assert c2.state.mode == "live" and c2.state.running
+    c2.stop()
     assert f2.open(tmp_path / "a.opencoord")
-    assert not c2.state.running and c2.state.connection == "connected"
-    assert c2.state.mode == "scan"
+    assert c2.state.connection == "connected" and c2.state.mode == "scan"
     c2.shutdown()
 
 
@@ -92,7 +95,7 @@ def test_open_errors_become_messages(tmp_path: Path) -> None:
     bad = tmp_path / "bad.opencoord"
     bad.write_bytes(b"nope")
     assert not f.open(bad)
-    assert "Not an OpenCoord session" in c.state.message
+    assert "Not a readable OpenCoord session" in c.state.message
     assert f.path is None
 
 
@@ -149,6 +152,47 @@ def test_import_reference(tmp_path: Path) -> None:
     bad.write_text("hello\n")
     assert not f.import_reference(bad)
     assert "Cannot import" in c.state.message
+
+
+def test_open_refused_while_stopping(tmp_path: Path) -> None:
+    c, f = make()
+    assert f.save(tmp_path / "a.opencoord")
+    c.state.stopping = True
+    assert not f.open(tmp_path / "a.opencoord")
+    assert "Stop the scan" in c.state.message
+
+
+def test_applied_session_content_is_validated(tmp_path: Path) -> None:
+    from opencoord.core import session as session_io
+    from opencoord.core.markers import Marker
+    from opencoord.core.types import ExclusionZone
+
+    c, f = make()
+    bad = session_io.Session(
+        markers=[Marker(i % 3 + 1, 600 * MHZ, "max") for i in range(12)]
+        + [Marker(7, 1, "nonsense")],
+        exclusion_zones=[
+            ExclusionZone(1, 5, 10),
+            ExclusionZone(1, 20, 30),
+            ExclusionZone(2, 30, 30),
+            ExclusionZone(99, 1, 2),
+        ],
+    )
+    session_io.save(tmp_path / "b.opencoord", bad)
+    assert f.open(tmp_path / "b.opencoord")
+    assert [m.id for m in c.state.markers] == [1, 2, 3]
+    assert c.state.exclusion_zones == [ExclusionZone(1, 5, 10)]
+
+
+def test_export_skips_non_finite_points(tmp_path: Path) -> None:
+    c, f = make()
+    c.state.references["ref1"] = Trace(
+        np.array([1e8, 2e8, 3e8]), np.array([-1.0, np.nan, -3.0], dtype=np.float32), "r"
+    )
+    assert f.export("generic", "ref1", tmp_path / "r.csv")
+    assert (tmp_path / "r.csv").read_text() == (
+        "frequency_mhz,level_dbm\n100.000000,-1.0\n300.000000,-3.0\n"
+    )
 
 
 def test_with_suffix() -> None:

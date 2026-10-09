@@ -10,7 +10,9 @@ from __future__ import annotations
 
 import io
 import json
+import math
 import zipfile
+import zlib
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -27,6 +29,18 @@ SCHEMA_VERSION: Final = 1
 SESSION_SUFFIX: Final = ".opencoord"
 _JSON_NAME: Final = "session.json"
 _NPZ_NAME: Final = "traces.npz"
+#: Largest total uncompressed size accepted when reading a session (zip bomb guard).
+MAX_UNCOMPRESSED_BYTES: Final = 256 * 1024 * 1024
+_READ_ERRORS: Final = (
+    zlib.error,
+    NotImplementedError,
+    RuntimeError,
+    KeyError,
+    EOFError,
+    OSError,
+    ValueError,
+    zipfile.BadZipFile,
+)
 
 Arrays = dict[str, tuple[npt.NDArray[np.float64], npt.NDArray[np.float32]]]
 
@@ -122,6 +136,10 @@ def _get(doc: Mapping[str, Any], key: str, kind: type | tuple[type, ...], defaul
     return value
 
 
+def _finite_or_none(value: float | None) -> float | None:
+    return value if value is not None and math.isfinite(value) else None
+
+
 def _records(doc: Mapping[str, Any], key: str) -> list[Mapping[str, Any]]:
     items: list[Any] = _get(doc, key, list, [])
     if not all(isinstance(i, dict) for i in items):
@@ -163,7 +181,7 @@ def from_json(text: str, arrays: Arrays | None = None) -> Session:
         mode=_get(raw, "mode", str, d.mode),
         preset=_get(raw, "preset", str, d.preset),
         resolution=_get(raw, "resolution", str, d.resolution),
-        threshold_dbm=_get(raw, "threshold_dbm", (int, float), d.threshold_dbm),
+        threshold_dbm=_finite_or_none(_get(raw, "threshold_dbm", (int, float), None)),
         overlay_enabled=_get(raw, "overlay_enabled", bool, d.overlay_enabled),
         channel_plan=_get(raw, "channel_plan", str, d.channel_plan),
     )
@@ -217,6 +235,8 @@ def encode_traces(traces: Mapping[str, Trace]) -> bytes:
 def decode_traces(data: bytes) -> Arrays:
     try:
         with np.load(io.BytesIO(data), allow_pickle=False) as npz:
+            if sum(i.file_size for i in npz.zip.infolist()) > MAX_UNCOMPRESSED_BYTES:
+                raise SessionError("The session's trace data is too large")
             keys = set(npz.files)
             out: Arrays = {}
             for key in sorted(keys):
@@ -227,7 +247,7 @@ def decode_traces(data: bytes) -> Arrays:
                         np.asarray(npz[f"{name}.dbm"], dtype=np.float32),
                     )
             return out
-    except (ValueError, OSError, zipfile.BadZipFile, EOFError) as exc:
+    except _READ_ERRORS as exc:
         raise SessionError(f"The session's trace data is unreadable: {exc}") from exc
 
 
@@ -264,12 +284,14 @@ def load(path: Path) -> Session:
             names = set(z.namelist())
             if _JSON_NAME not in names:
                 raise SessionError(f"Not an OpenCoord session: {_JSON_NAME} is missing")
+            if sum(i.file_size for i in z.infolist()) > MAX_UNCOMPRESSED_BYTES:
+                raise SessionError(f"{path.name} is too large to be a session")
             text = z.read(_JSON_NAME).decode("utf-8")
             blob = z.read(_NPZ_NAME) if _NPZ_NAME in names else None
     except FileNotFoundError as exc:
         raise SessionError(f"File not found: {path}") from exc
-    except (zipfile.BadZipFile, UnicodeDecodeError) as exc:
-        raise SessionError(f"Not an OpenCoord session file: {path.name}") from exc
     except OSError as exc:
         raise SessionError(f"Cannot read {path.name}: {exc.strerror or exc}") from exc
+    except (*_READ_ERRORS, UnicodeDecodeError) as exc:
+        raise SessionError(f"Not a readable OpenCoord session file: {path.name} ({exc})") from exc
     return from_json(text, decode_traces(blob) if blob is not None else None)
