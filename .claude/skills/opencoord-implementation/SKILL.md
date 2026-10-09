@@ -13,8 +13,9 @@ shows the spectrum (live, max-hold, waterfall, markers, TV channel overlay), exp
 - This skill: source of truth for *how* it is built. **Keep it in sync.** Any commit that changes an implementation
   detail described here updates the relevant file in the same commit.
 
-> Status: the project is in the planning phase. Sections marked **(planned)** describe decided designs that are not
-> yet in code. When implementing them, replace "(planned)" with what was actually built, including file paths.
+> Status: all v0.1 features are implemented; the release is waiting for the maintainer to bump the version and tag.
+> Any section still marked **(planned)** describes a decided design that is not yet in code. When implementing it,
+> replace "(planned)" with what was actually built, including file paths.
 
 ## Golden rules
 1. **Layering:** `device/protocol.py`, `device/models.py`, `core/traces.py` and all of `coord/` are **pure**: no
