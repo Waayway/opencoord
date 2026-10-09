@@ -19,8 +19,11 @@
   mypy (strict override for `opencoord.device.*`, `core.*`, `coord.*`), pytest markers `hardware` and `ui`.
 - `tests/conftest.py` skips `hardware` tests unless `OPENCOORD_HARDWARE=1`; `tests/ui/test_smoke.py` skips without
   `DISPLAY`/`WAYLAND_DISPLAY`.
-- `opencoord --smoke-frames N` renders N frames and exits 0 (CI / packaging smoke test).
-- Only `src/opencoord/ui/app.py` exists in `ui/` so far; other planned modules are not written yet.
+- `opencoord --smoke-frames N` renders N frames and exits 0 (CI / packaging smoke test). In smoke mode
+  `auto_connect` is forced off and settings are not saved, so it never touches a device or the user's config.
+  `opencoord --simulator` uses the simulated device; `-v` enables debug logging.
+- The UI modules are listed in `ui.md`; `tests/ui/test_smoke.py` runs `--smoke-frames` in a subprocess because
+  Dear PyGui segfaults on a second viewport in one process.
 
 ## Nix flake (`flake.nix`, implemented)
 - Built with uv2nix + pyproject-nix + pyproject-build-systems (all `follows` nixpkgs = `nixos-unstable`), so the Nix

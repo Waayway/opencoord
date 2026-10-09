@@ -58,6 +58,8 @@ class WaterfallHistory:
     """The last ``depth`` traces as rows of ``bins`` dBm values, newest first (row 0).
 
     Empty rows are NaN. A trace over a different range than the rows held clears the history.
+    ``version`` changes on every change; ``pushes`` counts rows pushed and ``generation`` changes
+    on ``clear``/``set_depth``, so a view can colour-map only the rows added since it last looked.
     """
 
     def __init__(self, depth: int = DEFAULT_WATERFALL_DEPTH, bins: int = DISPLAY_BINS) -> None:
@@ -68,6 +70,8 @@ class WaterfallHistory:
         self.count = 0
         self.range_hz: tuple[int, int] | None = None
         self.version = 0
+        self.pushes = 0
+        self.generation = 0
 
     @property
     def depth(self) -> int:
@@ -78,6 +82,7 @@ class WaterfallHistory:
         self.count = 0
         self.range_hz = None
         self.version += 1
+        self.generation += 1
 
     def push(self, trace: Trace) -> None:
         rng = (trace.start_hz, trace.stop_hz)
@@ -88,6 +93,7 @@ class WaterfallHistory:
         self.rows[0] = resample_max(trace.freqs_hz, trace.dbm, rng[0], rng[1], self.bins)
         self.count = min(self.count + 1, self.depth)
         self.version += 1
+        self.pushes += 1
 
     def set_depth(self, depth: int) -> None:
         if depth < 1:
@@ -98,6 +104,7 @@ class WaterfallHistory:
         self.rows = rows
         self.count = keep
         self.version += 1
+        self.generation += 1
 
 
 @dataclass

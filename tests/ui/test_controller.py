@@ -423,3 +423,13 @@ def test_non_finite_sweeps_are_skipped(ctl: Controller, factory: Factory) -> Non
     factory.links[0].sweeps.put(bad)
     for _ in range(3):
         ctl.tick()  # must not raise
+
+
+def test_a_preset_the_device_cannot_tune_becomes_a_custom_range(factory: Factory) -> None:
+    s = AppSettings(preset="1785-1805")
+    c = Controller(factory, settings=s, port_lister=lambda: [], simulator=True)
+    assert c.state.preset == "1785-1805"
+    connected(c)
+    assert c.state.preset is None
+    assert (c.state.start_hz, c.state.stop_hz) == (1785 * MHZ, 1805 * MHZ)
+    c.shutdown()

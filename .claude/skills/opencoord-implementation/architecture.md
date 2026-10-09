@@ -29,9 +29,10 @@ src/opencoord/
   ui/
     state.py         AppState (what views render, version counters), WaterfallHistory, resample_max (no DPG)
     controller.py    Controller: owns link/TraceSet/scanner/settings; intents + tick(); no DPG (done)
-    app.py, spectrum.py, waterfall.py, theme.py, shortcuts.py, panels/*.py
+    app.py, spectrum.py, waterfall.py, theme.py, shortcuts.py, panels/{device,scan}.py (done; see ui.md)
 ```
-Implemented so far: `__init__.py` (`__version__`), `__main__.py`, `cli.py`, `ui/{app,state,controller}.py`,
+Implemented so far: `__init__.py` (`__version__`), `__main__.py`, `cli.py`,
+`ui/{app,state,controller,spectrum,waterfall,theme,shortcuts}.py`, `ui/panels/{device,scan}.py`,
 `core/{types,traces,presets,settings}.py`,
 `device/{protocol,models,link_api,simulator,link,scanner}.py`; the rest of the tree
 is still to be written. `io/` is deliberately named like the stdlib module; all imports are absolute so it is safe.

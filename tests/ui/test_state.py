@@ -84,3 +84,14 @@ def test_history_clear() -> None:
     v = h.version
     h.clear()
     assert h.count == 0 and h.range_hz is None and h.version == v + 1
+
+
+def test_history_counters_for_incremental_views() -> None:
+    h = WaterfallHistory(depth=3, bins=2)
+    g = h.generation
+    h.push(_trace(0, 1, [-1.0, -2.0]))  # first push sets the range: a clear
+    assert h.generation == g + 1 and h.pushes == 1
+    h.push(_trace(0, 1, [-1.0, -2.0]))
+    assert h.generation == g + 1 and h.pushes == 2
+    h.set_depth(5)
+    assert h.generation == g + 2

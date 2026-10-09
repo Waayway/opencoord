@@ -336,6 +336,8 @@ class Controller:
                 self._connected_port = active[0] if active else st.port
             self._hold()
             _drain(link)
+            if st.preset is not None and presets.find(st.preset, st.device_range_hz) is None:
+                st.preset = None  # this device cannot tune it; keep the range as a custom one
             self._update_estimate()
             caps = st.capabilities
             self._say(f"Connected: {caps.name if caps else 'device'}")
@@ -378,7 +380,7 @@ class Controller:
         st = self.state
         self._tune_live(link)
         st.running = True
-        self._say(f"Live: {_mhz(st.start_hz)}-{_mhz(st.stop_hz)} MHz")
+        self._say(f"Tuning to {_mhz(st.start_hz)}-{_mhz(st.stop_hz)} MHz...")
 
     def _tune_live(self, link: Link) -> None:
         st = self.state
@@ -407,7 +409,9 @@ class Controller:
                 log.warning("device did not confirm the live span; using its current span")
             self._live_awaiting = None
             st.view_range_hz = (config.start_hz, config.stop_hz)
-            self._changed()
+            clamped = config.stop_hz < st.stop_hz - config.step_hz or config.start_hz > st.start_hz
+            note = " (the device's max span)" if clamped else ""
+            self._say(f"Live: {_mhz(config.start_hz)}-{_mhz(config.stop_hz)} MHz{note}")
         tol = max(config.step_hz, 1000)
         fresh = 0
         for sweep in sweeps:
@@ -427,8 +431,10 @@ class Controller:
             st.waterfall.push(live)
             fresh += 1
         if fresh:
-            if st.view_range_hz != (sweeps[-1].start_hz, sweeps[-1].stop_hz):
-                st.view_range_hz = (sweeps[-1].start_hz, sweeps[-1].stop_hz)
+            live = st.traces.live
+            assert live is not None
+            if st.view_range_hz != (live.start_hz, live.stop_hz):
+                st.view_range_hz = (live.start_hz, live.stop_hz)
                 self._changed()
             self._rate_count += fresh
             st.trace_version += 1
@@ -467,7 +473,11 @@ class Controller:
             return
         result = scanner.result
         if result is not None:
-            st.traces.update(Sweep(result.freqs_hz, result.dbm, time.time()))
+            try:
+                st.traces.update(Sweep(result.freqs_hz, result.dbm, time.time()))
+            except ValueError as exc:
+                self._end_scan(f"Scan failed: {exc}")
+                return
             live = st.traces.live
             assert live is not None
             st.waterfall.push(live)
