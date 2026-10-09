@@ -22,19 +22,39 @@
 - `opencoord --smoke-frames N` renders N frames and exits 0 (CI / packaging smoke test).
 - Only `src/opencoord/ui/app.py` exists in `ui/` so far; other planned modules are not written yet.
 
-## Nix flake (`flake.nix`)
-- Built with uv2nix + pyproject-nix + pyproject-build-systems, so the Nix build and devShell resolve from the **same
-  `uv.lock`**.
+## Nix flake (`flake.nix`, implemented)
+- Built with uv2nix + pyproject-nix + pyproject-build-systems (all `follows` nixpkgs = `nixos-unstable`), so the Nix
+  build and devShell resolve from the **same `uv.lock`**. `mkPyprojectOverlay { sourcePreference = "wheel"; }` +
+  `pyproject-build-systems.overlays.wheel`, Python `python313`. `flake.lock` is committed (`nix flake lock` to bump).
+- Systems: `x86_64-linux`, `aarch64-linux`, `aarch64-darwin`. **`x86_64-darwin` is not offered**: nixpkgs 26.11
+  (nixos-unstable) dropped it and evaluating `legacyPackages.x86_64-darwin` throws.
+- Wheel fixups (`pyprojectOverrides`, Linux only): `dearpygui` gets `autoPatchelfHook` + `libx11` +
+  `stdenv.cc.cc.lib` (its `.so` links `libX11.so.6` and `libstdc++` directly). GLFW dlopens the rest.
 - Outputs:
-  - `packages.default` (wrapped with `makeWrapper`, adding `libGL`, X11/Wayland libs to `LD_LIBRARY_PATH` because the
-    Dear PyGui wheel dlopens them)
-  - `apps.default`
-  - `devShells.default` (uv, python313, ruff, nixfmt, GL libs; `UV_PYTHON_DOWNLOADS=never`,
-    `UV_PYTHON=${python}`)
-  - `checks` (pytest)
-  - `formatter`
-- Systems: x86_64/aarch64 linux and darwin.
-- The package installs a `.desktop` file, icon and udev rule under `$out/share` and `$out/lib/udev/rules.d`.
+  - `packages.default` = `packages.opencoord`: venv `opencoord-env` (`workspace.deps.default`, no dev tools) wrapped
+    with `makeWrapper` into `$out/bin/opencoord` and `$out/bin/opencoord-cli`. On Linux the wrapper **prepends**
+    `libGL` (glvnd), `libx11`, `libxrandr`, `libxinerama`, `libxcursor`, `libxi`, `libxext`, `libxkbcommon`,
+    `wayland` to `LD_LIBRARY_PATH` and **appends** `/run/opengl-driver/lib` then nixpkgs `mesa/lib`. The mesa
+    fallback is what makes `nix run` work on non-NixOS hosts (glvnd otherwise finds no GLX vendor:
+    `GLX: No GLXFBConfigs returned` → assertion crash). Cost: mesa adds ~1 GiB to the closure (total ~1.3 GiB).
+    Installs `packaging/linux/opencoord.desktop` → `$out/share/applications/` and
+    `packaging/linux/99-opencoord-rfexplorer.rules` → `$out/lib/udev/rules.d/` (all systems). No icon yet.
+  - `apps.default`: `nix run` launches the GUI.
+  - `devShells.default`: `uv`, `python313`, `ruff`, `nixfmt`; `UV_PYTHON_DOWNLOADS=never`,
+    `UV_PYTHON=${python.interpreter}`; on Linux `LD_LIBRARY_PATH` = runtime libs + `libstdc++` (uv's unpatched
+    wheel) + the same GL fallback. `nix develop -c uv run opencoord --smoke-frames 5` works. Note: uv in the shell
+    recreates `.venv` on the Nix Python.
+  - `checks.<system>.pytest`: venv with `workspace.deps.default // { pytest = [ ]; hypothesis = [ ]; }` (not the
+    whole dev group, so no pyinstaller/mypy), source = `pyproject.toml` + `tests/` only, runs
+    `pytest -m "not ui and not hardware" -p no:cacheprovider`.
+  - `formatter`: `pkgs.nixfmt` (the RFC-style formatter; `nixfmt-rfc-style` is now a deprecated alias). `nix fmt`.
+- Local verification: `nix build && ./result/bin/opencoord --smoke-frames 5`, `nix flake check -L`,
+  `nix flake check --all-systems --no-build` (evaluates the darwin/aarch64 outputs without building).
+- New files must be `git add`ed before the flake can see them.
+
+## Linux desktop files (`packaging/linux/`, implemented)
+- `opencoord.desktop` (passes `desktop-file-validate`; `Exec=opencoord`, `Icon=opencoord`).
+- `99-opencoord-rfexplorer.rules`: `SUBSYSTEM=="tty"`, CP210x `10c4:ea60`, `MODE="0660"`, `TAG+="uaccess"`.
 
 ## Docker (`Dockerfile`)
 Base: `ghcr.io/astral-sh/uv:python3.13-bookworm-slim`.
@@ -62,7 +82,7 @@ Base: `ghcr.io/astral-sh/uv:python3.13-bookworm-slim`.
 |---|---|
 | `ci.yml` | on push/PR, cancel-in-progress per ref. Jobs: `lint` (ruff check, ruff format --check, mypy); `test` (ubuntu/windows/macos x py 3.11-3.14, `uv sync --locked --python X` + `uv run --python X pytest -m "not ui and not hardware"`, overrides `.python-version`); `ui-smoke` (apt xvfb + mesa/X11 libs, `xvfb-run -a uv run pytest -m ui`). Actions: checkout@v4, setup-uv@v5 (cache on) |
 | `build.yml` | builds per OS: ubuntu-22.04 (+ `-arm`), windows-latest, macos-14 (+ Intel if available); uploads artifacts |
-| `nix.yml` | `nix flake check` + `nix build` on Linux/macOS |
+| `nix.yml` | on push/PR, cancel-in-progress per ref; ubuntu-latest + macos-latest: DeterminateSystems `nix-installer-action` + `magic-nix-cache-action`, `nix flake check -L`, `nix build -L`, `./result/bin/opencoord --version` |
 | `docker.yml` | build/test stages on PR; on tag, push the runtime image to `ghcr.io/waayway/opencoord` |
 | `release.yml` | on `v*` tag: collect all artifacts + `SHA256SUMS` into a GitHub Release; optional PyPI trusted publishing |
 
