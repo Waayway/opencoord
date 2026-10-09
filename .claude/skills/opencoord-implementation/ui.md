@@ -231,3 +231,11 @@
   main thread between the tick and the view updates. (By default DPG runs them on its own thread; the smoke test
   asserts the thread id.) Any new code that creates a viewport must keep pumping the queue each frame.
 - Opening a session is refused (status "Stop the scan before opening a session") while `state.busy`.
+
+## Screenshots (`--screenshot`, `--tab`)
+`opencoord --simulator --screenshot out.png [--tab device|scan|markers|analysis|record|coordination|profiles]` starts
+live acquisition once connected, renders at least `SCREENSHOT_MIN_FRAMES` frames and `SCREENSHOT_SETTLE_S` seconds,
+saves the **whole window** as PNG through `App.capture_window(path)` (`dpg.output_frame_buffer` callback,
+`frame_to_rgba`, `encode_png`, `write_atomic`; poll `App.capture_done` / `capture_ok`) and exits. Like `--smoke-frames`
+it never saves settings and uses a temporary profile folder. `App.select_tab(name)` / `app.TABS` map names to tab tags.
+`docs/make_screenshots.py` uses the same methods to script the README pictures.

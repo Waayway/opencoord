@@ -13,11 +13,13 @@ import logging
 import sys
 import tempfile
 import time
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
+from typing import Any, Final
 
 import dearpygui.dearpygui as dpg
+import numpy as np
 
 from opencoord import __version__
 from opencoord.core import settings as settings_io
@@ -25,11 +27,13 @@ from opencoord.core.settings import AppSettings
 from opencoord.device.link import SerialLink, find_ports
 from opencoord.device.link_api import Link
 from opencoord.device.simulator import SimulatedLink
+from opencoord.io.atomic import write_atomic
+from opencoord.io.png import encode_png
 from opencoord.io.profile_store import ProfileStore
 from opencoord.ui import shortcuts, theme
 from opencoord.ui.controller import Controller, LinkFactory
 from opencoord.ui.coordination_actions import CoordinationActions
-from opencoord.ui.file_dialogs import FileUI
+from opencoord.ui.file_dialogs import FileUI, frame_to_rgba
 from opencoord.ui.files import FileActions
 from opencoord.ui.panels import device as device_panel
 from opencoord.ui.panels import scan as scan_panel
@@ -57,6 +61,18 @@ STATUS_HEIGHT = 30
 PLOT_MARGIN = 8
 
 
+#: Side-panel tabs by name (``--tab``).
+TABS: Final = {
+    name: f"tab.{name}"
+    for name in ("device", "scan", "markers", "analysis", "record", "coordination", "profiles")
+}
+#: ``--screenshot`` waits at least this long (sweeps must fill the waterfall) and this many frames.
+SCREENSHOT_SETTLE_S: Final = 4.0
+SCREENSHOT_MIN_FRAMES: Final = 120
+#: Frames to wait for the frame-buffer callback before giving up.
+SCREENSHOT_TIMEOUT_FRAMES: Final = 120
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="opencoord", description="OpenCoord spectrum scanner")
     parser.add_argument(
@@ -76,6 +92,20 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="N",
         default=None,
         help="render N frames, then exit 0 (CI and packaging smoke test)",
+    )
+    parser.add_argument(
+        "--screenshot",
+        type=Path,
+        metavar="PATH",
+        default=None,
+        help="render the window for a few seconds, save it as a PNG at PATH and exit "
+        "(documentation screenshots; combine with --simulator)",
+    )
+    parser.add_argument(
+        "--tab",
+        choices=sorted(TABS),
+        default=None,
+        help="side-panel tab to show at startup",
     )
     parser.add_argument("-v", "--verbose", action="store_true", help="log debug output")
     return parser
@@ -170,6 +200,10 @@ class App:
         self._work_total = 0.0
         self._work_max = 0.0
         self._built = False
+        self._capture_cb: Callable[[object, Any], None] | None = None
+        self._capture_wait = 0
+        self.capture_done = False
+        self.capture_ok = False
 
     # --- lifecycle ---
 
@@ -309,6 +343,24 @@ class App:
         height = dpg.get_viewport_client_height() - y - STATUS_HEIGHT
         return x, y, width, height
 
+    def _run_screenshot(self, path: Path) -> None:
+        """Render until the sweeps have filled the plots, then save the window and stop."""
+        started = False
+        while self.frame():
+            state = self.controller.state
+            if not started and state.connection == "connected" and not state.running:
+                started = True
+                self.controller.start()  # nothing else would fill the plots
+            settled = time.perf_counter() - self._started >= SCREENSHOT_SETTLE_S
+            if settled and self._frames >= SCREENSHOT_MIN_FRAMES:
+                break
+        self.capture_window(path)
+        waited = 0
+        while not self.capture_done and waited < SCREENSHOT_TIMEOUT_FRAMES and self.frame():
+            waited += 1
+        if not self.capture_ok:
+            raise RuntimeError(f"could not save the screenshot to {path}")
+
     def frame(self) -> bool:
         """Tick, update the views and render one frame; ``False`` once the window was closed."""
         if not dpg.is_dearpygui_running():
@@ -327,6 +379,7 @@ class App:
         self.spectrum.update(state)
         self.waterfall.update(state)
         self.file_ui.update()
+        self._step_capture()
         if state.ui_version != self._status_version or self._frames % 30 == 0:
             self._status_version = state.ui_version
             fps = dpg.get_frame_rate()
@@ -361,11 +414,52 @@ class App:
             dpg.destroy_context()
             self._built = False
 
-    def run(self, max_frames: int | None = None) -> FrameStats:
+    def select_tab(self, name: str) -> None:
+        """Show side-panel tab ``name`` (a key of :data:`TABS`)."""
+        dpg.set_value("tabs", TABS[name])
+
+    def capture_window(self, path: Path) -> None:
+        """Save the whole rendered window to ``path`` as PNG a few frames from now; see
+        :attr:`capture_done` and :attr:`capture_ok`."""
+        self.capture_done = False
+        self.capture_ok = False
+        self._capture_wait = 4  # frames, so the tab switch and any dialog are rendered
+
+        def saved(_sender: object, buffer: Any) -> None:
+            try:
+                rgba = frame_to_rgba(buffer, dpg.get_viewport_client_width())
+                write_atomic(path, encode_png(np.ascontiguousarray(rgba)))
+                self.capture_ok = True
+            except (ValueError, KeyError, SystemError, OSError):
+                log.exception("could not save the screenshot to %s", path)
+            self.capture_done = True
+
+        self._capture_cb = saved
+
+    def _step_capture(self) -> None:
+        if self._capture_cb is None:
+            return
+        if self._capture_wait > 0:
+            self._capture_wait -= 1
+            return
+        callback, self._capture_cb = self._capture_cb, None
+        dpg.output_frame_buffer(callback=callback)
+
+    def run(
+        self,
+        max_frames: int | None = None,
+        *,
+        screenshot: Path | None = None,
+        tab: str | None = None,
+    ) -> FrameStats:
         self.build()
         try:
             try:
-                while max_frames is None or self._frames < max_frames:
+                if tab is not None:
+                    self.select_tab(tab)
+                if screenshot is not None:
+                    self._run_screenshot(screenshot)
+                while screenshot is None and (max_frames is None or self._frames < max_frames):
                     if not self.frame():
                         break
             except KeyboardInterrupt:  # Ctrl+C in the terminal: exit normally, save settings
@@ -396,7 +490,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         level=logging.DEBUG if args.verbose else logging.INFO,
         format="%(levelname)s %(name)s: %(message)s",
     )
-    smoke = args.smoke_frames is not None
+    smoke = args.smoke_frames is not None or args.screenshot is not None
     settings = settings_io.load()
     if smoke:  # CI / packaging: never touch a real device
         settings = replace(settings, auto_connect=False)
@@ -411,7 +505,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         store = ProfileStore(Path(scratch.name) if scratch else None)
         app = App(controller, settings, args.session, profile_store=store)
-        app.run(max_frames=args.smoke_frames)
+        app.run(max_frames=args.smoke_frames, screenshot=args.screenshot, tab=args.tab)
     finally:
         if scratch is not None:
             scratch.cleanup()
