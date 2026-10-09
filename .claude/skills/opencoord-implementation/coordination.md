@@ -161,7 +161,9 @@ forbidden bands, zones, occupied spots and frequencies that are not candidates o
 
 Tests (`tests/coord/test_solver.py`): Hypothesis invariant (random profiles/groups/locked/zones/scan/override:
 the plan plus all backups jointly pass `check`), exhaustive search == brute-force maximum on small fixed sets,
-determinism, fake-clock time budget. Measured: 16 generic-analog devices in 470–694 MHz (25 kHz) 0.035 s / 17
+determinism, fake-clock time budget. Tests that assert `complete` / `not timed_out` on a non-trivial search
+(`MAX_DEVICES`, exhaustive vs brute force, determinism) pass `clock=frozen_clock` (never advances) so slow CI
+runners cannot time them out; only the explicit performance tests use the real clock (generous bounds). Measured: 16 generic-analog devices in 470–694 MHz (25 kHz) 0.035 s / 17
 nodes; 40 devices complete in 0.25 s / 41 nodes; 60–200 devices hit the 5 s budget with 46–47 placed (returns
 ~0.08 s after the deadline: node granularity plus assembling the result); 200 devices with 50 kHz carrier spacing
 only complete in ~0.3 s.

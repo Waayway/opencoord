@@ -82,6 +82,14 @@ def with_level(trace: Trace, lo_mhz: float, hi_mhz: float, level: float) -> Trac
     return Trace(trace.freqs_hz, dbm, trace.label)
 
 
+def frozen_clock() -> float:
+    """A clock that never advances: the time budget never runs out, so a test's outcome does
+    not depend on the speed of the machine (slow CI runners). Use it wherever a test asserts
+    ``complete`` / ``not timed_out`` on a non-trivial search; the explicit performance tests keep
+    the real clock."""
+    return 0.0
+
+
 def assert_clean(plan: Plan, request: CoordinationRequest) -> None:
     report = check(plan.assignments, request)
     assert report.violations == (), report.violations
@@ -153,10 +161,11 @@ def test_max_devices_returns_without_recursion_error() -> None:
         devices=[(profile, MAX_DEVICES)],
         presets={"z": SpacingRules(carrier=50 * KHZ)},
         time_budget_s=2.0,
+        clock=frozen_clock,  # completion must not depend on the runner's speed
     )
     plan = solve(req)
     assert len(plan.assignments) + len(plan.unassigned) == MAX_DEVICES
-    assert plan.stats.complete
+    assert plan.stats.complete and not plan.stats.timed_out
     assert_clean(plan, req)
 
 
@@ -358,7 +367,7 @@ def brute_max(profile: DeviceProfile, qty: int, req: CoordinationRequest) -> int
 )
 def test_exhaustive_search_finds_the_maximum(offsets: list[int], qty: int) -> None:
     profile = fixed("F", [800 + o * 0.05 for o in sorted(offsets)])
-    req = CoordinationRequest(devices=[(profile, qty)], time_budget_s=30.0)
+    req = CoordinationRequest(devices=[(profile, qty)], clock=frozen_clock)
     plan = solve(req)
     assert not plan.stats.timed_out
     assert len(plan.assignments) == brute_max(profile, qty, req)
@@ -541,6 +550,7 @@ def test_deterministic() -> None:
         devices=[(tuned(), 5), (fixed("F", [601.0, 605.0, 609.0]), 2)],
         scan=scan,
         locked=[LockedCarrier(607 * MHZ, "L")],
+        clock=frozen_clock,  # a timeout in one run only would change the node count
     )
     a, b = solve(req), solve(req)
     assert (a.assignments, a.unassigned, a.backups, a.warnings) == (
