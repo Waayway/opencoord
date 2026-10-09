@@ -14,6 +14,7 @@ from typing import Literal
 import numpy as np
 import numpy.typing as npt
 
+from opencoord.core.markers import Marker
 from opencoord.core.traces import TraceSet
 from opencoord.core.types import DeviceConfig, ModelInfo, Trace
 from opencoord.device.link import SerialPort
@@ -146,8 +147,36 @@ class AppState:
     #: Range the plots show (the confirmed live span, or the scan range).
     view_range_hz: tuple[int, int] = (470_000_000, 960_000_000)
     sweeps_per_s: float = 0.0
+    #: Markers (at most ``MAX_MARKERS``), the selected one, and the delta reference marker id.
+    markers: list[Marker] = field(default_factory=list)
+    selected_marker: int | None = None
+    delta_reference: int | None = None
+    #: Threshold line level in dBm (``None`` = hidden).
+    threshold_dbm: float | None = None
+    #: Frozen reference traces by key (``ref1`` .. ``ref4``), in the order they were frozen.
+    references: dict[str, Trace] = field(default_factory=dict)
+    #: Keys of traces the user hid (any of ``trace_map`` keys).
+    hidden_traces: set[str] = field(default_factory=set)
+    #: Y limits requested by auto-scale; ``y_limits_version`` changes on every request.
+    y_limits: tuple[float, float] | None = None
+    y_limits_version: int = 0
+    #: Cursor frequency while the mouse is over the spectrum plot, else ``None`` (set by the view).
+    cursor_hz: int | None = None
     ui_version: int = 0
     trace_version: int = 0
+
+    def trace_map(self) -> dict[str, Trace | None]:
+        """Every plottable trace by key: live, avg, min, max, scan (partial) and the references."""
+        t = self.traces
+        out: dict[str, Trace | None] = {
+            "live": t.live,
+            "avg": t.average,
+            "min": t.min_hold,
+            "max": t.max_hold,
+            "scan": self.scan_partial,
+        }
+        out.update(self.references)
+        return out
 
     @property
     def center_hz(self) -> int:

@@ -141,6 +141,43 @@ def test_visible_rows() -> None:
 
 
 def test_shortcuts_map_to_controller_intents() -> None:
-    keys = {s.key: s.action for s in shortcuts.SHORTCUTS}
-    assert keys == {"Space": Controller.toggle, "R": Controller.reset_max_hold}
-    assert shortcuts.help_text() == "Space: Start / stop   R: Reset max hold"
+    by_label = {s.label: s.action for s in shortcuts.SHORTCUTS}
+    assert list(by_label) == ["Space", "R", "M", "P", "N", "Shift+N"]
+    assert by_label["Space"] is Controller.toggle
+    assert by_label["R"] is Controller.reset_max_hold
+    assert by_label["M"] is Controller.add_marker_at_cursor
+    assert by_label["P"] is Controller.marker_to_peak
+    assert shortcuts.help_text().startswith("Space: Start / stop   R: Reset max hold   M: ")
+
+
+def test_next_peak_shortcuts_go_right_and_left() -> None:
+    from opencoord.core.types import Sweep
+    from opencoord.device.simulator import SimulatedLink
+
+    c = Controller(lambda _p: SimulatedLink(), port_lister=lambda: [])
+    dbm = np.asarray([-100, -60, -100, -100, -70, -100], dtype=np.float32)
+    c.state.traces.update(Sweep(470e6 + 100e3 * np.arange(6.0), dbm, 0.0))
+    c.add_marker(470_100_000)
+    right = next(s for s in shortcuts.SHORTCUTS if s.key == "N" and not s.shift)
+    left = next(s for s in shortcuts.SHORTCUTS if s.key == "N" and s.shift)
+    right.action(c)
+    assert c.state.markers[0].freq_hz == 470_400_000
+    left.action(c)
+    assert c.state.markers[0].freq_hz == 470_100_000
+
+
+def test_marker_text_and_delta_text() -> None:
+    from opencoord.core.markers import Marker
+    from opencoord.ui.controller import MarkerRow
+    from opencoord.ui.panels.markers import delta_text, level_text
+    from opencoord.ui.spectrum import marker_text
+
+    row = MarkerRow(Marker(1, 612_350_000, "max"), -67.24, None)
+    assert marker_text(row) == "M1 612.350 MHz -67.2 dBm"
+    assert level_text(row) == "-67.2"
+    out = MarkerRow(Marker(2, 612_350_000, "max"), None, None)
+    assert marker_text(out) == "M2 612.350 MHz"
+    assert level_text(out) == "-"
+    assert delta_text(None) == ""
+    assert delta_text((600_000, 10.04)) == "+0.600 MHz +10.0 dB"
+    assert delta_text((-1_250_000, -3.0)) == "-1.250 MHz -3.0 dB"

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import dataclasses
 import logging
+import math
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path
@@ -40,6 +41,8 @@ class AppSettings:
     window_height: int = 800
     waterfall_depth: int = 300
     mode: str = "live"
+    #: Threshold line level; ``None`` = hidden (omitted from the file, TOML has no null).
+    threshold_dbm: float | None = None
 
 
 def default_path() -> Path:
@@ -57,6 +60,13 @@ def _valid(name: str, value: Any) -> bool:
         return value in _RESOLUTIONS
     if name == "mode":
         return value in _MODES
+    if name == "threshold_dbm":
+        return (
+            isinstance(value, int | float)
+            and not isinstance(value, bool)
+            and math.isfinite(value)
+            and -200 <= value <= 50
+        )
     if not isinstance(value, int) or isinstance(value, bool):
         return False
     if name in ("start_hz", "stop_hz"):
@@ -89,6 +99,8 @@ def load(path: Path | None = None) -> AppSettings:
             log.warning("ignoring invalid setting %s = %r", field.name, data[field.name])
     if values.get("preset") == "":
         values["preset"] = None  # a custom range
+    if "threshold_dbm" in values:
+        values["threshold_dbm"] = float(values["threshold_dbm"])
     s = AppSettings(**values)
     if s.stop_hz <= s.start_hz:
         log.warning("ignoring invalid range in settings")

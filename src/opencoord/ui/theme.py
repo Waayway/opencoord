@@ -13,7 +13,15 @@ TRACE_COLORS: dict[str, RGBA] = {
     "avg": (0, 158, 115, 255),  # bluish green
     "min": (204, 121, 167, 255),  # reddish purple
     "scan": (240, 228, 66, 255),  # yellow
+    # Frozen reference traces: muted, so they sit behind the live data.
+    "ref1": (150, 160, 175, 170),
+    "ref2": (170, 150, 175, 170),
+    "ref3": (150, 175, 160, 170),
+    "ref4": (180, 165, 140, 170),
 }
+MARKER_COLOR: RGBA = (210, 210, 220, 200)
+MARKER_SELECTED_COLOR: RGBA = (255, 255, 255, 255)
+THRESHOLD_COLOR: RGBA = (255, 110, 90, 220)
 ERROR_COLOR: RGBA = (255, 110, 90, 255)
 OK_COLOR: RGBA = (0, 190, 140, 255)
 MUTED_COLOR: RGBA = (150, 150, 160, 255)
@@ -62,4 +70,14 @@ def series_theme(key: str) -> int | str:
     return theme
 
 
-__all__ = ["ERROR_COLOR", "MUTED_COLOR", "OK_COLOR", "TRACE_COLORS", "apply", "series_theme"]
+__all__ = [
+    "ERROR_COLOR",
+    "MARKER_COLOR",
+    "MARKER_SELECTED_COLOR",
+    "MUTED_COLOR",
+    "OK_COLOR",
+    "THRESHOLD_COLOR",
+    "TRACE_COLORS",
+    "apply",
+    "series_theme",
+]

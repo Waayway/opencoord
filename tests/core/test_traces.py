@@ -339,3 +339,22 @@ def test_peak_detection_scales_on_noisy_50k_trace() -> None:
     find_peaks(trace.freqs_hz, trace.dbm, 3.0, 50e3)
     detected_carriers(trace, -100.0, 6.0)
     assert time.perf_counter() - t0 < 3.0  # generous: ~0.1 s expected; guards O(n^2) regressions
+
+
+# --- auto_scale_limits --------------------------------------------------------------------------
+
+
+def test_auto_scale_limits_pads_the_extremes() -> None:
+    from opencoord.core.traces import auto_scale_limits
+
+    a = Trace(_freqs(3), np.asarray([-90, -80, -100], dtype=np.float32), "a")
+    b = Trace(_freqs(3), np.asarray([-60, -70, -75], dtype=np.float32), "b")
+    assert auto_scale_limits([a, b]) == (-105.0, -55.0)
+    assert auto_scale_limits([a], padding_db=2.0) == (-102.0, -78.0)
+
+
+def test_auto_scale_limits_none_without_data() -> None:
+    from opencoord.core.traces import auto_scale_limits
+
+    assert auto_scale_limits([]) is None
+    assert auto_scale_limits([Trace(_freqs(0), np.zeros(0, dtype=np.float32), "e")]) is None

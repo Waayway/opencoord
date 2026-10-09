@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from bisect import bisect_left, insort
 from collections import deque
+from collections.abc import Iterable
 
 import numpy as np
 import numpy.typing as npt
@@ -240,3 +241,14 @@ def detected_carriers(
     ]
     carriers.sort(key=lambda c: c.freq_hz)
     return carriers
+
+
+def auto_scale_limits(
+    traces: Iterable[Trace], padding_db: float = 5.0
+) -> tuple[float, float] | None:
+    """``(low, high)`` dBm covering every trace plus ``padding_db``; ``None`` without any data."""
+    lows = [float(np.min(t.dbm)) for t in traces if len(t.dbm)]
+    highs = [float(np.max(t.dbm)) for t in traces if len(t.dbm)]
+    if not lows:
+        return None
+    return min(lows) - padding_db, max(highs) + padding_db

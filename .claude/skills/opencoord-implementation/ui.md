@@ -28,7 +28,8 @@
     re-applies them to both x axes, so the user can still zoom and pan
   - hover: plot `crosshairs=True`; `spectrum.readout` shows cursor MHz/dBm plus the nearest level of max hold
     (or scan / live) via the pure `readout()`
-  - (planned, Phase 5) TV channel overlay as shaded areas, markers as `drag_line` + `annotation`, threshold line
+  - markers, threshold line and reference traces: see "Markers, threshold, references" below
+  - (planned, Phase 5) TV channel overlay as shaded areas
 - **Waterfall** (`waterfall.py` `WaterfallView`): a `dynamic_texture` `DISPLAY_BINS` (1024) wide and `depth` rows
   high (settings `waterfall_depth`, default 300), shown with an `image_series` whose bounds are the history's
   MHz range. Rows come from `WaterfallHistory` (newest first, resampled with `resample_max`: max per column so
@@ -48,7 +49,43 @@
   min purple, scan yellow) via per-series themes (`series_theme(key)`).
 - **Shortcuts** (`shortcuts.py`): `SHORTCUTS` maps Space → `Controller.toggle` (start/stop the selected mode) and
   R → `Controller.reset_max_hold`; they are ignored while one of the panels' text/number inputs is active.
-  (planned) M marker, P peak, N next peak, Ctrl+S save session, Ctrl+E export.
+  M adds a marker at the cursor (at the peak of the main trace when the mouse is not over the plot), P moves the
+  selected marker to the peak, N / Shift+N to the next peak right / left; ignored with Ctrl or Alt held
+  (`Shortcut.shift` selects the Shift variant). (planned) Ctrl+S save session, Ctrl+E export.
+- **Markers, threshold, references** (Task 14):
+  - Pure math in `core/markers.py` (`Marker(id, freq_hz, trace_key)`, `level_at` nearest bin or `None` outside the
+    trace, `peak`, `next_peak(trace, from, "left"|"right", min_prominence_db=3.0)` built on `find_peaks`,
+    `delta(a, b, traces)` = a minus b as `(df_hz, ddb)`); `auto_scale_limits(traces, padding_db=5)` is in
+    `core/traces.py`.
+  - State (`AppState`): `markers` (max 8, ids 1..8, smallest free id reused), `selected_marker`, `delta_reference`,
+    `threshold_dbm` (persisted in settings, `None` = hidden), `references` (`ref1`..`ref4` -> `Trace`),
+    `hidden_traces`, `y_limits` + `y_limits_version`, `cursor_hz` (written by `SpectrumView` while the mouse is over
+    the plot, `None` otherwise; a deliberate view-to-state hand-off that bumps no version). `trace_map()` lists
+    every plottable trace including references. Marker, threshold and selection changes bump `ui_version`;
+    reference / visibility changes bump both `trace_version` and `ui_version`.
+  - Controller intents: `add_marker(freq_hz)` (selects; `None` and a message at 8), `add_marker_at_cursor`,
+    `add_marker_at_peak`, `move_marker(id, freq_hz)` (used by dragging), `remove_marker`, `clear_markers`,
+    `select_marker`, `marker_to_peak`, `marker_next_peak(direction)`, `set_delta_reference(id|None)`,
+    `marker_rows()` -> `MarkerRow(marker, level_dbm, delta)`, `set_threshold_dbm(value|None)`,
+    `freeze_reference()` (copies the main trace = `resolve_trace("max")`: max hold, else scan, else live; refuses
+    with a message at 4), `remove_reference(index)` (position in the list), `set_trace_visible(key, bool)`,
+    `auto_scale()`. A marker reads the trace named by its `trace_key` (default `max`) and falls back to max hold,
+    scan, live when that trace is missing.
+  - **Placing a marker: Ctrl+click on the plot** (or the M key / "Add at peak"). Plain click-drag pans and the
+    wheel zooms (ImPlot defaults; double-click fits), so a plain click or double-click was not usable.
+  - Rendering (`SpectrumView`): a pool of 8 vertical `drag_line` + `plot_annotation` pairs shown/hidden per marker,
+    annotation text `M1 612.350 MHz -67.2 dBm` (ASCII hyphen: the default font has no minus sign, same for
+    "Delta"); dragging a line calls `move_marker` + `select_marker`; the selected marker is drawn thicker/brighter.
+    Lines are only written from state when they differ (tolerance 1e-5) so dragging never fights `set_value`.
+    The threshold is a horizontal `drag_line` (red), dragging calls `set_threshold_dbm`. Reference traces are
+    4 muted line series (`spectrum.trace.ref1..4`). The legend buttons are disabled (`no_buttons`): visibility is
+    state (`hidden_traces`), set from checkboxes in the Markers tab. Auto-scale applies `y_limits` like the range
+    (locked 3 frames, then released so zoom works).
+  - `panels/markers.py` `MarkersPanel` (tab "Markers"): Add at peak / Clear all / Auto-scale, a table with two
+    rows per marker (M select, MHz, dBm, Delta vs ref; then Peak, < >, Set ref, Delete), threshold checkbox + dBm
+    input (Enter applies; remembers the last value, default -90), visible-trace checkboxes, "Freeze current trace"
+    and one row per reference (visibility checkbox + Remove). Pooled widgets (`markers.row.N`, ...) are shown or
+    hidden; the panel refreshes when `ui_version` or `trace_version` changes.
 - **Simulator:** `opencoord --simulator` uses `SimulatedLink(sweep_points=512)` (like the WSUB1G+ at Normal/Fine) and
   connects on start; Live over 470-960 MHz is clamped to the 342.37 MHz max span at 512 points.
 - **Language:** English strings inline; no i18n. Labels use ASCII hyphens (default font).
@@ -56,7 +93,8 @@
   `tests/ui/test_smoke.py` (`@pytest.mark.ui`, skipped without `DISPLAY`/`WAYLAND_DISPLAY`) runs
   `python -m opencoord --smoke-frames 5` in a subprocess and, in-process, drives `App` frames against a
   512-point simulator: Live for 60 frames (asserts trace + waterfall + series data), then a Fast scan of
-  470-500 MHz to completion; it logs fps. Dear PyGui segfaults when a second viewport/context is created in the
+  470-500 MHz to completion, then a marker, reference, threshold, hidden trace and auto-scale (asserting the
+  drag lines, annotation and series); it logs fps. Dear PyGui segfaults when a second viewport/context is created in the
   same process, so only one test may open a window in-process.
 - **Performance (2026-10-09, 144 Hz Wayland desktop, vsync on):** Live at 512 points ~144 fps (vsync-bound),
   per-frame work ~0.2-0.4 ms; a 6261-point Normal 470-960 MHz scan trace re-pushed every frame still 144 fps.

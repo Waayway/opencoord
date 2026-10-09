@@ -13,7 +13,8 @@ src/opencoord/
     link_api.py      Link Protocol + LinkEvent(kind, message) (done)
     simulator.py     SimulatedLink + pure generate(): same interface as SerialLink, synthetic spectra (done)
   core/
-    types.py         Sweep, DeviceConfig, ModelInfo, Trace, Carrier (done); Marker, Band, … (planned)
+    types.py         Sweep, DeviceConfig, ModelInfo, Trace, Carrier (done); Band, … (planned)
+    markers.py       Marker (frozen), level_at, peak, next_peak, delta, MAX_MARKERS = 8 (pure, done)
     traces.py        pure (done): TraceSet (live/max/avg/min; average = exact mean of last N, dB domain; axis change resets),
                      noise_floor (20th percentile), find_peaks (own O(n) prominence, strongest first), detected_carriers
     presets.py       pure (done): RangePreset(name, start_hz, stop_hz), PRESETS (plan §4), available(device_range), find()
@@ -51,7 +52,8 @@ UI "Coordinate" ──▶ worker thread: solver.solve(profiles, trace, exclusion
 - `Controller(link_factory, *, settings, port_lister=find_ports, simulator=False)`; `link_factory(port)` builds a
   `Link` (`SerialLink(port)` or `SimulatedLink`). Views call intents (`connect`, `disconnect`, `refresh_ports`,
   `start`, `stop`, `toggle`, `set_mode`, `set_range`, `set_center_span`, `set_preset`, `set_resolution`,
-  `reset_max_hold`, `set_waterfall_depth`, `set_auto_connect`) and render `controller.state` (`ui/state.py`
+  `reset_max_hold`, `set_waterfall_depth`, `set_auto_connect`, and the marker / threshold / reference intents listed
+  in `ui.md`) and render `controller.state` (`ui/state.py`
   `AppState`); the frame loop calls `tick()` once per frame. Unit-tested against `SimulatedLink` without DPG
   (`tests/ui/test_controller.py`).
 - `open()`/`close()` run on worker threads (they block up to 5 s); results (`_Opened`/`_OpenFailed`/`_Closed`)
@@ -79,7 +81,7 @@ UI "Coordinate" ──▶ worker thread: solver.solve(profiles, trace, exclusion
 - User data dir (`platformdirs.user_config_dir("opencoord")`): `settings.toml`, `profiles/*.toml`, `presets.toml`.
 - `core/settings.py` `AppSettings` keys: `last_port`, `auto_connect` (false), `preset` (`""` = custom range),
   `resolution`, `start_hz`/`stop_hz`, `window_width`/`window_height`, `waterfall_depth` (300, limits
-  `WATERFALL_DEPTH_MIN`/`MAX` = 10/1000 shared with the controller and scan panel), `mode` (`live`/`scan`).
+  `WATERFALL_DEPTH_MIN`/`MAX` = 10/1000 shared with the controller and scan panel), `mode` (`live`/`scan`), `threshold_dbm` (optional float, omitted when hidden).
   `load()` ignores unknown keys and replaces invalid values by defaults (logged); an unreadable file (OS error,
   bad TOML, invalid UTF-8) gives defaults. `save()` writes atomically (tmp + replace). The app loads on start and saves on exit.
 - Sessions are user-chosen files: `.opencoord` = zip with `session.json` (schema-versioned) + `traces.npz`.

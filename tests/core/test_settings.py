@@ -100,3 +100,18 @@ def test_waterfall_depth_limits(tmp_path: Path) -> None:
     assert load(path).waterfall_depth == 300
     path.write_text("waterfall_depth = 1000\n", encoding="utf-8")
     assert load(path).waterfall_depth == 1000
+
+
+def test_threshold_roundtrip_and_validation(tmp_path: Path) -> None:
+    path = tmp_path / "settings.toml"
+    assert load(path).threshold_dbm is None
+    save(AppSettings(threshold_dbm=-72.5), path)
+    assert load(path).threshold_dbm == -72.5
+    save(AppSettings(threshold_dbm=None), path)
+    assert "threshold_dbm" not in path.read_text(encoding="utf-8")
+    path.write_text("threshold_dbm = -70\n", encoding="utf-8")
+    assert load(path).threshold_dbm == -70.0
+    path.write_text('threshold_dbm = "high"\n', encoding="utf-8")
+    assert load(path).threshold_dbm is None
+    path.write_text("threshold_dbm = nan\n", encoding="utf-8")
+    assert load(path).threshold_dbm is None

@@ -29,6 +29,7 @@ from opencoord.ui.controller import Controller, LinkFactory
 from opencoord.ui.panels import device as device_panel
 from opencoord.ui.panels import scan as scan_panel
 from opencoord.ui.panels.device import DevicePanel
+from opencoord.ui.panels.markers import MarkersPanel
 from opencoord.ui.panels.scan import ScanPanel
 from opencoord.ui.spectrum import TAG_READOUT, SpectrumView
 from opencoord.ui.state import AppState
@@ -125,7 +126,8 @@ class App:
         self._settings = settings
         self.device_panel = DevicePanel(controller)
         self.scan_panel = ScanPanel(controller)
-        self.spectrum = SpectrumView()
+        self.markers_panel = MarkersPanel(controller)
+        self.spectrum = SpectrumView(controller)
         self.waterfall = WaterfallView()
         self._status_version = -1
         self._frames = 0
@@ -168,7 +170,9 @@ class App:
                         self.device_panel.build()
                     with dpg.tab(label="Scan", tag="tab.scan"):
                         self.scan_panel.build()
-                    for name in ("Markers", "Coordination", "Profiles"):
+                    with dpg.tab(label="Markers", tag="tab.markers"):
+                        self.markers_panel.build()
+                    for name in ("Coordination", "Profiles"):
                         with dpg.tab(label=name, tag=f"tab.{name.lower()}"):
                             dpg.add_text(COMING_SOON, color=theme.MUTED_COLOR)
             dpg.add_text("", tag="status.line")
@@ -178,7 +182,12 @@ class App:
         dpg.setup_dearpygui()
         dpg.show_viewport()
         shortcuts.bind(
-            self.controller, [*self.device_panel.text_inputs, *self.scan_panel.text_inputs]
+            self.controller,
+            [
+                *self.device_panel.text_inputs,
+                *self.scan_panel.text_inputs,
+                *self.markers_panel.text_inputs,
+            ],
         )
         self.controller.startup()
         self._started = time.perf_counter()
@@ -227,6 +236,7 @@ class App:
         state = self.controller.state
         self.device_panel.update(state)
         self.scan_panel.update(state)
+        self.markers_panel.update(state)
         self.spectrum.update(state)
         self.waterfall.update(state)
         if state.ui_version != self._status_version or self._frames % 30 == 0:

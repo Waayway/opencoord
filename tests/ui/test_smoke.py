@@ -81,6 +81,27 @@ def test_live_and_scan_against_the_simulator() -> None:
         scan = c.state.traces.live
         assert scan is not None and scan.start_hz == pytest.approx(470 * MHZ, abs=MHZ)
         assert len(dpg.get_value("spectrum.trace.live")[0]) == len(scan.freqs_hz)
+        mid = c.add_marker(scan.start_hz + 5 * MHZ)
+        assert mid == 1
+        assert c.freeze_reference() == "ref1"
+        c.set_threshold_dbm(-80.0)
+        c.auto_scale()
+        c.set_trace_visible("avg", False)
+        for _ in range(8):
+            assert app.frame()
+        assert dpg.get_item_configuration("spectrum.marker.0")["show"]
+        assert dpg.get_value("spectrum.marker.0") == pytest.approx((scan.start_hz + 5 * MHZ) / 1e6)
+        assert "M1" in dpg.get_item_configuration("spectrum.marker.0.note")["label"]
+        assert dpg.get_item_configuration("spectrum.threshold")["show"]
+        assert dpg.get_value("spectrum.threshold") == pytest.approx(-80.0)
+        assert len(dpg.get_value("spectrum.trace.ref1")[0]) == len(scan.freqs_hz)
+        assert not dpg.get_item_configuration("spectrum.trace.avg")["show"]
+        assert dpg.get_item_configuration("markers.row.0")["show"]
+        assert not dpg.get_item_configuration("markers.row.1")["show"]
+        c.remove_marker(1)
+        for _ in range(2):
+            assert app.frame()
+        assert not dpg.get_item_configuration("spectrum.marker.0")["show"]
         for tab in ("markers", "coordination", "profiles"):
             assert dpg.does_item_exist(f"tab.{tab}")
         stats = app.stats()

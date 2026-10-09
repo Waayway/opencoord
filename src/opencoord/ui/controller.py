@@ -21,16 +21,21 @@ from __future__ import annotations
 
 import contextlib
 import logging
+import math
 import queue
 import threading
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, replace
+from typing import Final
 
+from opencoord.core import markers as marker_math
 from opencoord.core import presets
+from opencoord.core.markers import MAX_MARKERS, Direction, Marker
 from opencoord.core.presets import RangePreset
 from opencoord.core.settings import WATERFALL_DEPTH_MAX, WATERFALL_DEPTH_MIN, AppSettings
-from opencoord.core.types import DeviceConfig, Sweep
+from opencoord.core.traces import auto_scale_limits
+from opencoord.core.types import DeviceConfig, Sweep, Trace
 from opencoord.device.link import SerialPort, find_ports
 from opencoord.device.link_api import Link
 from opencoord.device.scanner import Resolution, SegmentedScanner
@@ -42,6 +47,12 @@ LinkFactory = Callable[[str | None], Link]
 PortLister = Callable[[], list[SerialPort]]
 
 _MHZ = 1_000_000
+#: Reference traces that can be frozen at once.
+MAX_REFERENCES: Final = 4
+#: Trace a marker reads when its own trace is missing, in order of preference.
+_MARKER_FALLBACK: Final = ("max", "scan", "live")
+#: Padding (dB) around the data for auto-scale.
+AUTO_SCALE_PADDING_DB: Final = 5.0
 #: Accept the current config if the device has not confirmed a retune within this time.
 LIVE_CONFIRM_TIMEOUT_S = 3.0
 _RATE_WINDOW_S = 1.0
@@ -61,6 +72,17 @@ class _OpenFailed:
 @dataclass(frozen=True)
 class _Closed:
     link: Link
+
+
+@dataclass(frozen=True)
+class MarkerRow:
+    """What the markers table shows for one marker."""
+
+    marker: Marker
+    #: Level on the marker's trace; ``None`` outside the trace.
+    level_dbm: float | None
+    #: ``(df_hz, ddb)`` versus the delta reference marker; ``None`` without (or for) the reference.
+    delta: tuple[int, float] | None
 
 
 _Result = _Opened | _OpenFailed | _Closed
@@ -116,6 +138,7 @@ class Controller:
             st.preset = preset.name
             st.start_hz, st.stop_hz = preset.start_hz, preset.stop_hz
         st.view_range_hz = (st.start_hz, st.stop_hz)
+        st.threshold_dbm = s.threshold_dbm
         self.state = st
 
     # --- helpers ------------------------------------------------------------------------------
@@ -143,7 +166,207 @@ class Controller:
             stop_hz=st.stop_hz,
             waterfall_depth=st.waterfall.depth,
             mode=st.mode,
+            threshold_dbm=st.threshold_dbm,
         )
+
+    # --- marker intents -----------------------------------------------------------------------
+
+    def resolve_trace(self, key: str) -> tuple[str, Trace] | None:
+        """``(key, trace)`` for ``key``, else max hold, scan or live; ``None`` without data."""
+        traces = self.state.trace_map()
+        for k in (key, *_MARKER_FALLBACK):
+            trace = traces.get(k)
+            if trace is not None:
+                return k, trace
+        return None
+
+    def _marker(self, marker_id: int | None) -> Marker | None:
+        return next((m for m in self.state.markers if m.id == marker_id), None)
+
+    def _replace_marker(self, marker: Marker, freq_hz: int) -> None:
+        st = self.state
+        st.markers = [replace(m, freq_hz=freq_hz) if m.id == marker.id else m for m in st.markers]
+        self._changed()
+
+    def add_marker(self, freq_hz: float, trace_key: str = "max") -> int | None:
+        """Add a marker (selected) at ``freq_hz``; returns its id, or ``None`` at the limit."""
+        st = self.state
+        if len(st.markers) >= MAX_MARKERS:
+            self._say(f"At most {MAX_MARKERS} markers; remove one first")
+            return None
+        marker_id = next(i for i in range(1, MAX_MARKERS + 1) if self._marker(i) is None)
+        st.markers = sorted([*st.markers, Marker(marker_id, round(freq_hz), trace_key)], key=_id)
+        st.selected_marker = marker_id
+        self._changed()
+        return marker_id
+
+    def add_marker_at_cursor(self) -> int | None:
+        """Marker at the cursor when it is over the plot, else at the peak of the main trace."""
+        if self.state.cursor_hz is not None:
+            return self.add_marker(self.state.cursor_hz)
+        return self.add_marker_at_peak()
+
+    def add_marker_at_peak(self) -> int | None:
+        """Marker at the highest point of the main trace."""
+        resolved = self.resolve_trace("max")
+        if resolved is None:
+            self._say("No trace to place a marker on yet")
+            return None
+        return self.add_marker(marker_math.peak(resolved[1]))
+
+    def remove_marker(self, marker_id: int) -> None:
+        st = self.state
+        if self._marker(marker_id) is None:
+            return
+        st.markers = [m for m in st.markers if m.id != marker_id]
+        if st.selected_marker == marker_id:
+            st.selected_marker = None
+        if st.delta_reference == marker_id:
+            st.delta_reference = None
+        self._changed()
+
+    def clear_markers(self) -> None:
+        st = self.state
+        st.markers = []
+        st.selected_marker = st.delta_reference = None
+        self._changed()
+
+    def select_marker(self, marker_id: int | None) -> None:
+        if marker_id is not None and self._marker(marker_id) is None:
+            return
+        self.state.selected_marker = marker_id
+        self._changed()
+
+    def move_marker(self, marker_id: int, freq_hz: float) -> None:
+        marker = self._marker(marker_id)
+        if marker is not None and marker.freq_hz != round(freq_hz):
+            self._replace_marker(marker, round(freq_hz))
+
+    def _selected_with_trace(self) -> tuple[Marker, Trace] | None:
+        marker = self._marker(self.state.selected_marker)
+        if marker is None:
+            self._say("Select a marker first")
+            return None
+        resolved = self.resolve_trace(marker.trace_key)
+        if resolved is None:
+            self._say("No trace to search")
+            return None
+        return marker, resolved[1]
+
+    def marker_to_peak(self) -> None:
+        """Move the selected marker to the highest point of its trace."""
+        found = self._selected_with_trace()
+        if found is not None:
+            self.move_marker(found[0].id, marker_math.peak(found[1]))
+
+    def marker_next_peak(self, direction: Direction) -> None:
+        """Move the selected marker to the next peak on its left or right."""
+        found = self._selected_with_trace()
+        if found is None:
+            return
+        marker, trace = found
+        freq = marker_math.next_peak(trace, marker.freq_hz, direction)
+        if freq is None:
+            self._say(f"No further peak to the {direction}")
+            return
+        self.move_marker(marker.id, freq)
+
+    def set_delta_reference(self, marker_id: int | None) -> None:
+        if marker_id is not None and self._marker(marker_id) is None:
+            return
+        self.state.delta_reference = marker_id
+        self._changed()
+
+    def marker_rows(self) -> list[MarkerRow]:
+        """Level (and delta versus the reference marker) of every marker, in id order."""
+        st = self.state
+        reference = self._marker(st.delta_reference)
+        ref_read = self._read(reference) if reference is not None else None
+        rows = []
+        for m in st.markers:
+            read = self._read(m)
+            diff = None
+            if (
+                reference is not None
+                and ref_read is not None
+                and read is not None
+                and m is not reference
+            ):
+                traces = {m.trace_key: read[0], reference.trace_key: ref_read[0]}
+                diff = marker_math.delta(m, reference, traces)
+            rows.append(MarkerRow(m, read[1] if read else None, diff))
+        return rows
+
+    def _read(self, marker: Marker) -> tuple[Trace, float] | None:
+        """The trace a marker reads from and its level there; ``None`` outside the trace."""
+        resolved = self.resolve_trace(marker.trace_key)
+        if resolved is None:
+            return None
+        level = marker_math.level_at(resolved[1], marker.freq_hz)
+        return None if level is None else (resolved[1], level)
+
+    # --- threshold, reference traces, display ---------------------------------------------------
+
+    def set_threshold_dbm(self, value: float | None) -> None:
+        """Show the threshold line at ``value`` dBm, or hide it with ``None``."""
+        if value is not None and not math.isfinite(value):
+            return
+        self.state.threshold_dbm = None if value is None else float(value)
+        self._changed()
+
+    def freeze_reference(self) -> str | None:
+        """Copy the main trace into a new reference; returns its key (``None`` if refused)."""
+        st = self.state
+        if len(st.references) >= MAX_REFERENCES:
+            self._say(f"At most {MAX_REFERENCES} reference traces; remove one first")
+            return None
+        resolved = self.resolve_trace("max")
+        if resolved is None:
+            self._say("No trace to freeze yet")
+            return None
+        n = next(i for i in range(1, MAX_REFERENCES + 1) if f"ref{i}" not in st.references)
+        key = f"ref{n}"
+        src = resolved[1]
+        copy = Trace(src.freqs_hz, src.dbm.copy(), f"Ref {n}: {src.label}")
+        copy.dbm.setflags(write=False)
+        st.references = dict(sorted({**st.references, key: copy}.items()))
+        self.state.trace_version += 1
+        self._changed()
+        return key
+
+    def remove_reference(self, index: int) -> None:
+        """Remove the ``index``-th reference trace (0 = the first in the list)."""
+        st = self.state
+        keys = list(st.references)
+        if not 0 <= index < len(keys):
+            return
+        del st.references[keys[index]]
+        st.hidden_traces.discard(keys[index])
+        st.trace_version += 1
+        self._changed()
+
+    def set_trace_visible(self, key: str, visible: bool) -> None:
+        hidden = self.state.hidden_traces
+        if visible:
+            hidden.discard(key)
+        else:
+            hidden.add(key)
+        self.state.trace_version += 1
+        self._changed()
+
+    def auto_scale(self) -> None:
+        """Set the y limits to cover the visible traces, padded by 5 dB."""
+        st = self.state
+        visible = [
+            t for k, t in st.trace_map().items() if t is not None and k not in st.hidden_traces
+        ]
+        limits = auto_scale_limits(visible, AUTO_SCALE_PADDING_DB)
+        if limits is None:
+            self._say("No visible trace data to scale to")
+            return
+        st.y_limits = limits
+        st.y_limits_version += 1
+        self._changed()
 
     # --- connection intents -------------------------------------------------------------------
 
@@ -585,6 +808,10 @@ class Controller:
         st.scan_estimate_s = scanner.estimate_seconds()
 
 
+def _id(marker: Marker) -> int:
+    return marker.id
+
+
 def _drain(link: Link) -> list[Sweep]:
     out: list[Sweep] = []
     while True:
@@ -601,4 +828,11 @@ def _close_quietly(link: Link) -> None:
         log.warning("error closing the link", exc_info=True)
 
 
-__all__ = ["LIVE_CONFIRM_TIMEOUT_S", "Controller", "LinkFactory", "PortLister"]
+__all__ = [
+    "LIVE_CONFIRM_TIMEOUT_S",
+    "MAX_REFERENCES",
+    "Controller",
+    "LinkFactory",
+    "MarkerRow",
+    "PortLister",
+]
