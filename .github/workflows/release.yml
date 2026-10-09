@@ -81,8 +81,13 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          # A re-run replaces an earlier draft for this tag (a published release is never touched).
+          if [ "$(gh release view "$GITHUB_REF_NAME" --json isDraft --jq .isDraft 2>/dev/null)" = "true" ]; then
+            gh release delete "$GITHUB_REF_NAME" --yes
+          fi
           flags=""
-          case "$GITHUB_REF_NAME" in *-*) flags="--prerelease" ;; esac
+          # Pre-release: any letter or '-' in the version part (0.1.0rc1, 0.1.0.dev0, 0.1.0-beta.1).
+          case "${GITHUB_REF_NAME#v}" in *[A-Za-z-]*) flags="--prerelease" ;; esac
           gh release create "$GITHUB_REF_NAME" release/* \
             --draft $flags \
             --title "OpenCoord ${GITHUB_REF_NAME#v}" \

@@ -3,9 +3,7 @@ name: Build
 on:
   pull_request:
   workflow_dispatch:
-  push:
-    tags: ["v*"]
-  # Reused by release.yml, which publishes the artifacts below.
+  # Tags are built by release.yml, which calls this workflow (a tags trigger here would build twice).
   workflow_call:
 
 concurrency:
