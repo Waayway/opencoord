@@ -8,8 +8,11 @@ Bad files never raise on load: they are returned as ``LoadIssue`` entries.
 from __future__ import annotations
 
 import re
+import tomllib
+import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
 
 from platformdirs import user_config_dir
 
@@ -35,8 +38,25 @@ def default_config_dir() -> Path:
 
 
 def _slug(name: str) -> str:
-    slug = re.sub(r"[^A-Za-z0-9._-]+", "-", name.strip()).strip("-.")
+    """File stem for ``name``: NFC, casefolded, Unicode word characters kept.
+
+    Case-folding makes names that differ only by case map to the same stem, which the collision
+    handling in ``ProfileStore`` then resolves with a numeric suffix.
+    """
+    text = unicodedata.normalize("NFC", name).strip().casefold()
+    slug = re.sub(r"[^\w.-]+", "-", text).strip("-.")
     return slug or "unnamed"
+
+
+def _internal_name(path: Path, kind: Literal["preset", "profile"]) -> str | None:
+    """The name stored inside a file, or ``None`` if unreadable."""
+    try:
+        data = tomllib.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError):
+        return None
+    head = data.get(kind)
+    name = head.get("name") if isinstance(head, dict) else None
+    return name.strip() if isinstance(name, str) else None
 
 
 class ProfileStore:
@@ -45,25 +65,64 @@ class ProfileStore:
         self.profiles_dir = root / "profiles"
         self.spacing_dir = root / "spacing"
 
+    # -- shared file handling --------------------------------------------------------------
+    @staticmethod
+    def _find(directory: Path, name: str, kind: Literal["preset", "profile"]) -> Path | None:
+        """The file in ``directory`` whose internal name is ``name``."""
+        wanted = name.strip()
+        for path in sorted(directory.glob("*.toml")):
+            if _internal_name(path, kind) == wanted:
+                return path
+        return None
+
+    @classmethod
+    def _target(cls, directory: Path, name: str, kind: Literal["preset", "profile"]) -> Path:
+        """Where to save ``name``: its existing file, else a free path (numeric suffix on clash)."""
+        existing = cls._find(directory, name, kind)
+        if existing is not None:
+            return existing
+        stem = _slug(name)
+        path = directory / f"{stem}.toml"
+        n = 2
+        while path.exists():
+            path = directory / f"{stem}-{n}.toml"
+            n += 1
+        return path
+
     # -- spacing presets -------------------------------------------------------------------
     def seed_defaults(self) -> None:
-        """First run only: write the built-in presets if the spacing directory does not exist.
+        """First run only: write built-in presets that are not already present.
 
-        Later runs leave the directory alone, so deleted presets stay deleted and edits survive.
+        A ``.seeded`` marker records that this happened, so later runs leave the directory alone:
+        deleted presets stay deleted and edits survive.
         """
-        if self.spacing_dir.exists():
+        marker = self.spacing_dir / ".seeded"
+        if marker.exists():
             return
         for preset in builtin_presets().values():
-            self.save_preset(preset)
-
-    def _preset_path(self, name: str) -> Path:
-        return self.spacing_dir / f"{_slug(name)}.toml"
+            if self._find(self.spacing_dir, preset.name, "preset") is None:
+                self.save_preset(preset)
+        write_atomic(marker, b"")
 
     def save_preset(self, preset: SpacingPreset) -> None:
-        write_atomic(self._preset_path(preset.name), preset_to_toml(preset).encode("utf-8"))
+        path = self._target(self.spacing_dir, preset.name, "preset")
+        write_atomic(path, preset_to_toml(preset).encode("utf-8"))
 
     def delete_preset(self, name: str) -> None:
-        self._preset_path(name).unlink(missing_ok=True)
+        path = self._find(self.spacing_dir, name, "preset")
+        if path is not None:
+            path.unlink()
+
+    def rename_preset(self, old_name: str, preset: SpacingPreset) -> None:
+        """Save ``preset`` (carrying the new name) and remove the file of ``old_name``.
+
+        Profiles that reference the old name are not touched. ``FileExistsError`` if the new name
+        belongs to a different existing preset.
+        """
+        old_path = self._rename_source(self.spacing_dir, "preset", old_name, preset.name)
+        self.save_preset(preset)
+        if old_path is not None:
+            old_path.unlink(missing_ok=True)
 
     def reset_preset(self, name: str) -> None:
         """Restore built-in preset ``name`` (even if deleted); ``KeyError`` if not built in."""
@@ -74,6 +133,7 @@ class ProfileStore:
 
     def load_presets(self) -> tuple[dict[str, SpacingPreset], list[LoadIssue]]:
         presets: dict[str, SpacingPreset] = {}
+        paths: dict[str, Path] = {}
         issues: list[LoadIssue] = []
         for path in sorted(self.spacing_dir.glob("*.toml")):
             try:
@@ -81,27 +141,71 @@ class ProfileStore:
             except (OSError, UnicodeDecodeError, SpacingError) as exc:
                 issues.append(LoadIssue(path, str(exc)))
                 continue
+            if preset.name in presets:
+                issues.append(
+                    LoadIssue(
+                        path,
+                        f"duplicate preset name {preset.name!r} (already defined in "
+                        f"{paths[preset.name].name}); this file is ignored",
+                    )
+                )
+                continue
             presets[preset.name] = preset
+            paths[preset.name] = path
         return presets, issues
 
     # -- profiles --------------------------------------------------------------------------
-    def _profile_path(self, name: str) -> Path:
-        return self.profiles_dir / f"{_slug(name)}.toml"
-
     def save_profile(self, profile: DeviceProfile) -> None:
-        write_atomic(self._profile_path(profile.name), profile_to_toml(profile).encode("utf-8"))
+        path = self._target(self.profiles_dir, profile.name, "profile")
+        write_atomic(path, profile_to_toml(profile).encode("utf-8"))
 
     def delete_profile(self, name: str) -> None:
-        self._profile_path(name).unlink(missing_ok=True)
+        path = self._find(self.profiles_dir, name, "profile")
+        if path is not None:
+            path.unlink()
+
+    def rename_profile(self, old_name: str, profile: DeviceProfile) -> None:
+        """Save ``profile`` (carrying the new name) and remove the file of ``old_name``.
+
+        ``FileExistsError`` if the new name belongs to a different existing profile.
+        """
+        old_path = self._rename_source(self.profiles_dir, "profile", old_name, profile.name)
+        self.save_profile(profile)
+        if old_path is not None:
+            old_path.unlink(missing_ok=True)
 
     def load_profiles(
         self, presets: dict[str, SpacingPreset]
     ) -> tuple[list[DeviceProfile], list[LoadIssue]]:
         profiles: list[DeviceProfile] = []
+        seen: dict[str, Path] = {}
         issues: list[LoadIssue] = []
         for path in sorted(self.profiles_dir.glob("*.toml")):
             try:
-                profiles.append(parse_profile(path.read_text(encoding="utf-8"), presets.keys()))
+                profile = parse_profile(path.read_text(encoding="utf-8"), presets.keys())
             except (OSError, UnicodeDecodeError, ProfileError) as exc:
                 issues.append(LoadIssue(path, str(exc)))
+                continue
+            if profile.name in seen:
+                issues.append(
+                    LoadIssue(
+                        path,
+                        f"duplicate profile name {profile.name!r} (already defined in "
+                        f"{seen[profile.name].name}); this file is ignored",
+                    )
+                )
+                continue
+            seen[profile.name] = path
+            profiles.append(profile)
         return profiles, issues
+
+    # -- rename ----------------------------------------------------------------------------
+    def _rename_source(
+        self, directory: Path, kind: Literal["preset", "profile"], old: str, new: str
+    ) -> Path | None:
+        """The old file to remove after saving under ``new`` (``None`` if nothing to remove)."""
+        if old.strip() == new.strip():
+            return None
+        if self._find(directory, new, kind) is not None:
+            raise FileExistsError(f"a {kind} named {new!r} already exists")
+        return self._find(directory, old, kind)

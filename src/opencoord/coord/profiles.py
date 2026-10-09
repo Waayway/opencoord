@@ -28,6 +28,11 @@ from opencoord.coord.spacing import (
 Kind = Literal["mic", "iem", "other"]
 KINDS: tuple[str, ...] = ("mic", "iem", "other")
 MAX_CANDIDATES = 100_000
+MAX_MHZ = 1_000_000  # 1 THz; bounds finite-but-absurd values before rounding
+MAX_STEP_KHZ = 1_000_000_000
+_PROFILE_KEYS = ("name", "kind", "tuning", "step_khz", "channels", "spacing")
+_TOP_KEYS = ("profile", "spacing", "groups")
+_GROUP_KEYS = ("name", "channels")
 
 
 class ProfileError(ValueError):
@@ -97,8 +102,10 @@ def parse_profile(text: str, preset_names: Collection[str]) -> DeviceProfile:
 def _mhz_to_hz(value: object, where: str) -> int:
     if isinstance(value, bool) or not isinstance(value, int | float):
         raise ProfileError(f"{where}: expected a frequency in MHz, got {value!r}")
-    if not math.isfinite(value) or value <= 0:
-        raise ProfileError(f"{where}: frequency must be above 0 MHz, got {value!r}")
+    if not math.isfinite(value) or value <= 0 or value > MAX_MHZ:
+        raise ProfileError(
+            f"{where}: frequency must be above 0 and at most {MAX_MHZ:g} MHz, got {value!r}"
+        )
     return round(value * 1_000_000)
 
 
@@ -114,10 +121,19 @@ def _channel_list(value: object, where: str) -> tuple[int, ...]:
     return tuple(out)
 
 
+def _reject_unknown(table: Mapping[str, Any], allowed: tuple[str, ...], where: str) -> None:
+    unknown = sorted(set(table) - set(allowed))
+    if unknown:
+        raise ProfileError(f"{where}: unknown key {unknown[0]!r} (valid: {', '.join(allowed)})")
+
+
 def profile_from_dict(data: Mapping[str, Any], preset_names: Collection[str]) -> DeviceProfile:
     head = data.get("profile")
     if not isinstance(head, Mapping):
         raise ProfileError("missing [profile] table")
+
+    _reject_unknown(data, _TOP_KEYS, "top level")
+    _reject_unknown(head, _PROFILE_KEYS, "[profile]")
 
     name = head.get("name")
     if not isinstance(name, str) or not name.strip():
@@ -159,6 +175,7 @@ def profile_from_dict(data: Mapping[str, Any], preset_names: Collection[str]) ->
     for i, g in enumerate(raw_groups):
         if not isinstance(g, Mapping):
             raise ProfileError(f"[[groups]] #{i + 1}: expected a table")
+        _reject_unknown(g, _GROUP_KEYS, f"[[groups]] #{i + 1}")
         gname = g.get("name")
         if not isinstance(gname, str) or not gname.strip():
             raise ProfileError(f"[[groups]] #{i + 1} name: a non-empty text is required")
@@ -184,7 +201,7 @@ def profile_from_dict(data: Mapping[str, Any], preset_names: Collection[str]) ->
             raise ProfileError("[profile] step_khz: required when tuning ranges are used")
         if isinstance(step, bool) or not isinstance(step, int | float):
             raise ProfileError(f"[profile] step_khz: expected a number in kHz, got {step!r}")
-        if not math.isfinite(step) or round(step * 1000) <= 0:
+        if not math.isfinite(step) or step <= 0 or step > MAX_STEP_KHZ or round(step * 1000) <= 0:
             raise ProfileError(f"[profile] step_khz: must be above 0 kHz, got {step!r}")
         step_hz = round(step * 1000)
         count = sum((r.stop_hz - r.start_hz) // step_hz + 1 for r in tuning)

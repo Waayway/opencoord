@@ -21,5 +21,5 @@ def available() -> list[str]:
 def read_text(name: str) -> str:
     """The TOML text of packaged template ``name``; ``FileNotFoundError`` if unknown."""
     if name not in available():
-        raise FileNotFoundError(f"no built-in spacing template named {name!r}")
+        raise FileNotFoundError(f"no built-in profile template named {name!r}")
     return (resources.files(__package__) / f"{name}{_SUFFIX}").read_text(encoding="utf-8")

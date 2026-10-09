@@ -37,10 +37,16 @@ im3_2tx = 100                # fields: carrier im3_2tx im3_3tx im5_2tx im7_2tx i
   fields replace) -> `RunOverride(scale=1.0, values=PartialSpacing())`: its `values` replace fields, then `scale`
   multiplies every field of the result (rounded to Hz; must be > 0). For a pair of devices
   `SpacingRules.resolve(a, b)` (= `a.resolve(b)`) is the per-field max (stricter); commutative, >= both.
-- `ProfileStore(config_dir=None)`: `seed_defaults()` (only when `<config>/spacing/` does not exist, so deletions and
-  edits stick), `load_presets()` / `load_profiles(presets)` -> `(items, [LoadIssue(path, message)])` (bad files never
-  raise), `save_/delete_preset`, `reset_preset(name)` (built-in only, `KeyError` otherwise), `save_/delete_profile`.
-  Files are named by a slug of the name; the name inside the file is authoritative.
+- `ProfileStore(config_dir=None)`: `seed_defaults()` (writes missing built-ins once, then a `.seeded` marker in
+  `<config>/spacing/`, so deletions and edits stick and a prior `save_preset` is never overwritten),
+  `load_presets()` / `load_profiles(presets)` -> `(items, [LoadIssue(path, message)])` (bad files and files with a
+  duplicate internal name become issues, never raise), `save_/delete_preset`, `rename_preset(old_name, preset)`,
+  `rename_profile(old_name, profile)` (save new, remove old file; `FileExistsError` on a name clash),
+  `reset_preset(name)` (built-in only, `KeyError` otherwise), `save_/delete_profile`.
+  Files are `<slug>.toml` (NFC, casefolded, Unicode word chars kept); the name inside the file is authoritative and
+  files are found by it. A new name whose slug is taken by a different name gets a numeric suffix (`-2`, ...).
+- Unknown keys in `[profile]`, `[[groups]]`, `[spacing]` and the top level are validation errors; numbers are bounded
+  (<= 1e6 MHz, step/spacing <= 1e9 kHz) so bad files cannot raise from `round()`.
 - Templates: Generic analog mic, Generic IEM, Generic digital, Fixed-channel set.
 - Every rejection records `(rule, required_khz, actual_khz, other_carrier)` so the UI can explain it (planned, solver).
 

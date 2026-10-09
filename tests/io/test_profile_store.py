@@ -97,3 +97,92 @@ def test_profile_with_missing_preset_is_an_issue_listing_presets(store: ProfileS
 def test_loading_from_a_missing_directory_is_empty(store: ProfileStore) -> None:
     assert store.load_profiles({}) == ([], [])
     assert store.load_presets() == ({}, [])
+
+
+def _preset(name: str, n: int = 1) -> SpacingPreset:
+    return SpacingPreset(name, "", SpacingRules(n, n, n, n, n, n))
+
+
+@pytest.mark.parametrize(
+    ("a", "b"),
+    [
+        ("マイク", "ギター"),
+        ("Микрофон", "Гитара"),
+        ("!!!", "???"),
+        ("Club / 2nd floor", "Club - 2nd floor"),
+        ("Stage", "stage"),
+    ],
+)
+def test_names_that_slug_alike_do_not_overwrite_each_other(
+    store: ProfileStore, a: str, b: str
+) -> None:
+    store.save_preset(_preset(a, 1))
+    store.save_preset(_preset(b, 2))
+    presets, issues = store.load_presets()
+    assert issues == []
+    assert presets[a].rules.carrier == 1
+    assert presets[b].rules.carrier == 2
+    store.save_preset(_preset(a, 3))  # re-saving updates in place, no third file
+    presets, _ = store.load_presets()
+    assert len(presets) == 2
+    assert presets[a].rules.carrier == 3
+    store.delete_preset(b)
+    assert list(store.load_presets()[0]) == [a]
+
+
+def test_colliding_profile_names_are_kept_apart(store: ProfileStore) -> None:
+    store.seed_defaults()
+    presets, _ = store.load_presets()
+    p1 = DeviceProfile("マイク", "mic", "iem", channels=(863_000_000,))
+    p2 = DeviceProfile("ギター", "mic", "iem", channels=(864_000_000,))
+    store.save_profile(p1)
+    store.save_profile(p2)
+    profiles, issues = store.load_profiles(presets)
+    assert issues == []
+    assert sorted(p.name for p in profiles) == sorted(["マイク", "ギター"])
+
+
+def test_duplicate_internal_names_are_reported(store: ProfileStore, tmp_path: Path) -> None:
+    store.save_preset(_preset("a"))
+    d = tmp_path / "cfg" / "spacing"
+    (d / "copy.toml").write_text((d / "a.toml").read_text(encoding="utf-8"), encoding="utf-8")
+    presets, issues = store.load_presets()
+    assert list(presets) == ["a"]
+    assert "duplicate" in issues[0].message
+
+    store.seed_defaults()
+    presets, _ = store.load_presets()
+    pdir = tmp_path / "cfg" / "profiles"
+    store.save_profile(DeviceProfile("P", "mic", "iem", channels=(863_000_000,)))
+    (pdir / "dup.toml").write_text((pdir / "p.toml").read_text(encoding="utf-8"), encoding="utf-8")
+    profiles, issues = store.load_profiles(presets)
+    assert len(profiles) == 1
+    assert "duplicate" in issues[0].message
+
+
+def test_rename_removes_the_old_file(store: ProfileStore, tmp_path: Path) -> None:
+    store.save_preset(_preset("old", 5))
+    store.rename_preset("old", _preset("new", 5))
+    assert list(store.load_presets()[0]) == ["new"]
+    assert len(list((tmp_path / "cfg" / "spacing").glob("*.toml"))) == 1
+    store.save_preset(_preset("other"))
+    with pytest.raises(FileExistsError):
+        store.rename_preset("new", _preset("other"))
+
+    presets = {"iem": builtin_presets()["iem"]}
+    store.save_profile(DeviceProfile("A", "mic", "iem", channels=(863_000_000,)))
+    store.rename_profile("A", DeviceProfile("B", "mic", "iem", channels=(863_000_000,)))
+    assert [p.name for p in store.load_profiles(presets)[0]] == ["B"]
+
+
+def test_seeding_after_a_save_keeps_the_saved_preset(store: ProfileStore) -> None:
+    mine = SpacingPreset("iem", "mine", SpacingRules(1, 2, 3, 4, 5, 6))
+    store.save_preset(mine)
+    store.seed_defaults()
+    presets, issues = store.load_presets()
+    assert issues == []
+    assert presets["iem"] == mine
+    assert set(presets) == set(builtin_presets())
+    store.delete_preset("digital")
+    store.seed_defaults()
+    assert "digital" not in store.load_presets()[0]

@@ -24,6 +24,7 @@ import tomli_w
 
 from opencoord.coord import spacing_presets
 
+MAX_KHZ = 1_000_000_000  # bounds finite-but-absurd values before rounding
 _FIELDS = ("carrier", "im3_2tx", "im3_3tx", "im5_2tx", "im7_2tx", "im5_3tx")
 
 
@@ -107,8 +108,8 @@ def khz_to_hz(value: object, where: str) -> int:
     """A TOML number in kHz as whole Hz (>= 0); ``SpacingError`` naming ``where`` otherwise."""
     if isinstance(value, bool) or not isinstance(value, int | float):
         raise SpacingError(f"{where}: expected a number in kHz, got {value!r}")
-    if not math.isfinite(value) or value < 0:
-        raise SpacingError(f"{where}: must be 0 or more kHz, got {value!r}")
+    if not math.isfinite(value) or value < 0 or value > MAX_KHZ:
+        raise SpacingError(f"{where}: must be between 0 and {MAX_KHZ:g} kHz, got {value!r}")
     return round(value * 1000)
 
 
@@ -142,6 +143,9 @@ def parse_preset(text: str) -> SpacingPreset:
 
 
 def preset_from_dict(data: Mapping[str, Any]) -> SpacingPreset:
+    unknown = sorted(set(data) - {"preset", "spacing"})
+    if unknown:
+        raise SpacingError(f"top level: unknown key {unknown[0]!r} (valid: preset, spacing)")
     head = data.get("preset")
     name = head.get("name") if isinstance(head, Mapping) else None
     if not isinstance(name, str) or not name.strip():

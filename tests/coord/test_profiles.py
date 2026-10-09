@@ -130,6 +130,11 @@ def test_candidates_from_groups_expose_membership() -> None:
             "group.*A",
         ),
         (TUNED + "im9 = 3\n", "im9"),
+        (TUNED.replace('kind = "mic"', 'kind = "mic"\nstepp = 3'), "stepp"),
+        (TUNED + "[extra]\na = 1\n", "extra"),
+        (TUNED.replace("823.0, 832.0", "823.0, 1e300"), "tuning"),
+        (TUNED.replace("step_khz = 25", "step_khz = 1e300"), "step_khz"),
+        (TUNED.replace("im3_2tx = 120", "im3_2tx = 1e300"), "im3_2tx"),
         (TUNED.replace("im5_3tx = 0", "im5_3tx = -1"), "im5_3tx"),
     ],
 )
@@ -179,7 +184,7 @@ def profiles(draw: st.DrawFn) -> DeviceProfile:
         ranges = []
         for _ in range(draw(st.integers(1, 3))):
             a = draw(freq)
-            ranges.append(TuningRange(a, a + draw(st.integers(1, 50_000_000))))
+            ranges.append(TuningRange(a, a + draw(st.integers(1, 20_000_000))))
         step = draw(st.integers(min_value=1000, max_value=1_000_000)) // 1000 * 1000
         return DeviceProfile(**common, tuning=tuple(ranges), step_hz=step)  # type: ignore[arg-type]
     if source == "channels":
