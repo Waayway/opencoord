@@ -2,7 +2,9 @@ name: Release
 
 # Pushing a tag like v0.1.0 builds every installer (build.yml), the wheel and sdist, and creates a
 # DRAFT GitHub Release with all of them plus SHA256SUMS. Review the draft, then publish it by hand.
-# The container image is pushed to GHCR by docker.yml on the same tag.
+# The container image is pushed to GHCR by docker.yml, which runs independently on the same tag:
+# there is no dependency between the two workflows, so the image can be published even if this
+# release fails (or before the draft is reviewed). Check both runs before publishing the draft.
 
 on:
   push:

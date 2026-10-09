@@ -88,7 +88,7 @@ if sys.platform == "darwin":
             "CFBundleShortVersionString": PLIST_VERSION,
             "CFBundleVersion": PLIST_VERSION,
             "NSHighResolutionCapable": True,
-            "LSMinimumSystemVersion": "11.0",
+            "LSMinimumSystemVersion": "13.0",  # the locked dearpygui wheels are macosx_13_0_arm64
             "NSHumanReadableCopyright": "GPL-3.0-or-later",
             "CFBundleDocumentTypes": [
                 {
