@@ -1,5 +1,7 @@
 from pathlib import Path
 
+import pytest
+
 from opencoord.ui import app
 
 
@@ -35,3 +37,25 @@ def test_tab_names_match_the_built_tabs() -> None:
         "profiles",
     }
     assert all(tag == f"tab.{name}" for name, tag in app.TABS.items())
+
+
+def test_a_failing_callback_is_reported_and_the_rest_still_run(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    ran: list[object] = []
+    reports: list[str] = []
+
+    def boom(sender: object, app_data: object) -> None:
+        raise TypeError("bad thing")
+
+    jobs = [
+        [boom, "s1", "a1", None],
+        [None, "s0", None, None],
+        [lambda sender, app_data, user_data: ran.append((sender, app_data, user_data)), "s2", 2, 3],
+        [lambda: ran.append("no args"), "s3", None, None],
+    ]
+    with caplog.at_level("ERROR"):
+        app.run_callback_jobs(jobs, reports.append)
+    assert ran == [("s2", 2, 3), "no args"]
+    assert reports == ["Internal error: bad thing (see the log)"]
+    assert "bad thing" in caplog.text and "Traceback" in caplog.text

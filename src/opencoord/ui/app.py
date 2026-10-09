@@ -9,6 +9,7 @@ frame calls ``Controller.tick()``, lets the views push changed data to Dear PyGu
 from __future__ import annotations
 
 import argparse
+import inspect
 import logging
 import sys
 import tempfile
@@ -52,6 +53,27 @@ from opencoord.ui.state import AppState
 from opencoord.ui.waterfall import WaterfallView
 
 log = logging.getLogger(__name__)
+
+
+def run_callback_jobs(jobs: Sequence[Sequence[Any]] | None, report: Callable[[str], None]) -> None:
+    """Run queued DPG callback jobs like ``dpg.run_callbacks``, but isolate failures.
+
+    Each job is ``[callback, sender, app_data, user_data]``; the callback gets as many of those
+    arguments as it declares. An exception in one callback is logged with its traceback and
+    reported through ``report`` (the status line) instead of escaping the render loop, which
+    would close the app mid-show without saving the settings.
+    """
+    for job in jobs or ():
+        callback = job[0]
+        if callback is None:
+            continue
+        try:
+            n = len(inspect.signature(callback).parameters)
+            callback(*job[1 : 1 + n])
+        except Exception as exc:
+            log.exception("error in a UI callback (%r)", callback)
+            report(f"Internal error: {exc} (see the log)")
+
 
 #: The simulator runs at 512 points per sweep like the WSUB1G+ in Normal/Fine scans.
 SIMULATOR_POINTS = 512
@@ -334,7 +356,12 @@ class App:
         """Run the callbacks DPG queued since the last frame (UI thread, manual management)."""
         jobs = dpg.get_callback_queue()
         if jobs:
-            dpg.run_callbacks(jobs)
+            run_callback_jobs(jobs, self._report_error)
+
+    def _report_error(self, message: str) -> None:
+        state = self.controller.state
+        state.message = message
+        state.ui_version += 1
 
     def plot_rect(self) -> tuple[float, float, float, float]:
         """``(x, y, width, height)`` of the plot area (readout line, spectrum, waterfall)."""

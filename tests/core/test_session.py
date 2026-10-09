@@ -254,3 +254,25 @@ def test_json_round_trip_hypothesis(
         opencoord_version="0.1.0",
     )
     assert from_json(to_json(s)) == s
+
+
+def test_bare_npy_trace_data_is_a_session_error() -> None:
+    import io as _io
+
+    buf = _io.BytesIO()
+    np.save(buf, np.zeros(3))
+    with pytest.raises(ses.SessionError, match="trace data"):
+        ses.decode_traces(buf.getvalue())
+
+
+def test_session_with_bare_npy_traces_does_not_open(tmp_path: Path) -> None:
+    import io as _io
+
+    buf = _io.BytesIO()
+    np.save(buf, np.zeros(3))
+    path = tmp_path / "x.opencoord"
+    with zipfile.ZipFile(path, "w") as z:
+        z.writestr("session.json", json.dumps({"schema_version": 2, "traces": {"live": {}}}))
+        z.writestr("traces.npz", buf.getvalue())
+    with pytest.raises(ses.SessionError):
+        ses.load(path)

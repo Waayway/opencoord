@@ -8,6 +8,8 @@ Files are UTF-8 with `\n` line endings; writes are atomic.
 See `architecture.md` "Persistence". Pure: `to_json`, `from_json(text, arrays)`, `encode_traces`, `decode_traces`,
 `build_traces`. Round-trip tests: `tests/core/test_session.py` (incl. Hypothesis on the JSON).
 Schema 2 (Task 22) adds `coordination` and fills `plan`; v1 files (plan always null) are read unchanged.
+- Every read problem is a `SessionError` (user-facing message; `FileActions.open` shows it): bad zip/JSON/npz, a
+  `traces.npz` that is not an npz archive (e.g. a bare `.npy`; `np.load` returns an ndarray), too large.
 - `coordination`: `{"devices": [{"profile", "quantity", "check"}], "locked": [{"freq_hz", "label", "preset"}],
   "options": {"use_scan", "threshold_db", "guard_khz", "allow_forbidden", "prefer_single_group", "time_budget_s",
   "backups_per_profile", "override": {"enabled", "scale", "values_khz": {field: kHz}}}}`; missing fields default,

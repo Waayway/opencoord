@@ -241,8 +241,12 @@ def encode_traces(traces: Mapping[str, Trace]) -> bytes:
 
 def decode_traces(data: bytes) -> Arrays:
     try:
-        with np.load(io.BytesIO(data), allow_pickle=False) as npz:
-            if sum(i.file_size for i in npz.zip.infolist()) > MAX_UNCOMPRESSED_BYTES:
+        loaded = np.load(io.BytesIO(data), allow_pickle=False)
+        if not isinstance(loaded, np.lib.npyio.NpzFile):  # a bare .npy array
+            raise SessionError("The session's trace data is unreadable: not an .npz archive")
+        with loaded as npz:
+            infos = npz.zip.infolist() if npz.zip is not None else []
+            if sum(i.file_size for i in infos) > MAX_UNCOMPRESSED_BYTES:
                 raise SessionError("The session's trace data is too large")
             keys = set(npz.files)
             out: Arrays = {}
@@ -254,6 +258,8 @@ def decode_traces(data: bytes) -> Arrays:
                         np.asarray(npz[f"{name}.dbm"], dtype=np.float32),
                     )
             return out
+    except SessionError:
+        raise
     except _READ_ERRORS as exc:
         raise SessionError(f"The session's trace data is unreadable: {exc}") from exc
 

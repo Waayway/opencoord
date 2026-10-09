@@ -226,7 +226,10 @@
   per-frame work ~0.2-0.4 ms; a 6261-point Normal 470-960 MHz scan trace re-pushed every frame still 144 fps.
   Spikes up to ~10 ms only on the first frame and on range changes (full waterfall remap + texture upload).
 - **Callbacks run on the UI thread:** `App.build()` calls `dpg.configure_app(manual_callback_management=True)` and
-  `App.frame()` runs `dpg.run_callbacks(dpg.get_callback_queue())` right after `controller.tick()`, so ALL DPG
+  `App.frame()` runs the queue (`dpg.get_callback_queue()`) through `app.run_callback_jobs(jobs, report)` right after
+  `controller.tick()` (same argument passing as `dpg.run_callbacks`, but each callback is wrapped in
+  `try/except Exception`: the traceback is logged and the status line says "Internal error: … (see the log)", so a
+  bug in one callback never escapes `run()` and closes the app without saving settings), so ALL DPG
   callbacks (widgets, menus, file dialogs, `output_frame_buffer`, drag lines, key and item handlers) execute on the
   main thread between the tick and the view updates. (By default DPG runs them on its own thread; the smoke test
   asserts the thread id.) Any new code that creates a viewport must keep pumping the queue each frame.
