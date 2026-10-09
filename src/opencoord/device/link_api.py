@@ -64,8 +64,11 @@ class Link(Protocol):
       not open. More points lower ``capabilities.max_span_hz`` (959.95 MHz at 112, 342.37 MHz at
       512 on the WSUB1G+), so set the points before a span that depends on it.
     - ``hold()`` pauses sweeping; ``switch_module(main)`` selects the main or expansion module.
-    - Links that cannot retune (e.g. a replay of a recording) may raise ``NotImplementedError``
-      from ``set_span``, ``hold`` and ``switch_module``.
+    - Links that cannot retune (e.g. a replay of a recording) set ``retunable`` to ``False`` and may
+      raise ``NotImplementedError`` from ``set_span``, ``set_sweep_points``, ``hold`` and
+      ``switch_module``. ``retunable`` is ``True`` for real devices and the simulator; code that
+      only holds a ``Link`` reads it with ``getattr(link, "retunable", True)``, so a link that does
+      not define it counts as retunable. Scanning (stitching several spans) needs a retunable link.
     - ``sweeps`` and ``events`` are bounded queues that drop the oldest item when full. They are
       not cleared on ``close()``; consumers drain them.
     - A sweep may predate the latest ``set_span``. Every ``Sweep`` carries its own axis, so
@@ -87,6 +90,9 @@ class Link(Protocol):
 
     @property
     def is_open(self) -> bool: ...
+
+    @property
+    def retunable(self) -> bool: ...
 
     def open(self) -> None: ...
 

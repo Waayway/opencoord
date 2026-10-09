@@ -137,6 +137,10 @@ class SimulatedLink:
     def is_open(self) -> bool:
         return self._thread is not None and self._thread.is_alive()
 
+    @property
+    def retunable(self) -> bool:
+        return True
+
     def open(self, timeout_s: float = 5.0) -> None:
         if self.is_open:
             return

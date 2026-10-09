@@ -291,6 +291,10 @@ class SerialLink:
     def is_open(self) -> bool:
         return self._thread is not None and self._thread.is_alive()
 
+    @property
+    def retunable(self) -> bool:
+        return True
+
     # --- Link methods ---
 
     def open(self, timeout_s: float = 5.0) -> None:
