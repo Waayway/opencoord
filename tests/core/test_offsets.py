@@ -5,7 +5,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from opencoord.core.offsets import offset_key, offset_sweep, offset_trace
+from opencoord.core.offsets import active_model_code, offset_key, offset_sweep, offset_trace
 from opencoord.core.types import DeviceConfig, ModelInfo, Sweep, Trace
 
 
@@ -24,6 +24,15 @@ def test_key_follows_the_active_module() -> None:
     assert offset_key(model, _config(False)) == "model_10"
     assert offset_key(model, _config(True)) == "model_4"
     assert offset_key(ModelInfo(10, None, "x"), _config(True)) == "model_10"
+
+
+def test_active_model_code_follows_the_active_module() -> None:
+    model = ModelInfo(10, 4, "03.39")
+    assert active_model_code(None, None) is None
+    assert active_model_code(model, None) == 10
+    assert active_model_code(model, _config(False)) == 10
+    assert active_model_code(model, _config(True)) == 4
+    assert active_model_code(ModelInfo(10, None, "x"), _config(True)) == 10
 
 
 def test_sweep_and_trace_are_shifted_not_mutated() -> None:

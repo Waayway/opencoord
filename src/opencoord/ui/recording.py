@@ -29,6 +29,7 @@ from typing import Final
 
 from opencoord.core import logger as logger_mod
 from opencoord.core.logger import Alert, LoggerEngine, LogRange, LogWriter
+from opencoord.core.offsets import active_model_code
 from opencoord.core.types import Sweep
 from opencoord.device.replay import replay_port
 from opencoord.io import recording as rec
@@ -158,12 +159,8 @@ class RecordingActions:
         model, config, caps = st.model, st.config, st.capabilities
         if model is None or config is None or caps is None:
             return None
-        expansion = config.expansion_active and model.expansion_code is not None
-        code = (
-            model.expansion_code
-            if expansion and model.expansion_code is not None
-            else model.main_code
-        )
+        code = active_model_code(model, config)
+        assert code is not None
         return RecordingInfo(
             model_name=caps.name,
             model_code=code,

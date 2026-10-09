@@ -130,3 +130,19 @@ def test_amp_offsets_roundtrip_and_validation(tmp_path: Path) -> None:
     assert load(path).amp_offsets == {"model_10": 3.0}
     path.write_text("amp_offsets = 5\n", encoding="utf-8")
     assert load(path).amp_offsets == {}
+
+
+def test_save_writes_atomically(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[Path] = []
+    real = settings_mod.write_atomic
+
+    def spy(path: Path, data: bytes) -> None:
+        calls.append(path)
+        real(path, data)
+
+    monkeypatch.setattr(settings_mod, "write_atomic", spy, raising=True)
+    path = tmp_path / "settings.toml"
+    save(AppSettings(), path)
+    assert calls == [path]
+    assert load(path) == AppSettings()
+    assert [p.name for p in tmp_path.iterdir()] == ["settings.toml"]

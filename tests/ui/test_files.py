@@ -254,6 +254,34 @@ def test_same_point_count_on_another_span_does_not_mix_with_the_session(tmp_path
     assert float(mx.dbm.max()) == -110.0  # the session's -40 dBm peak is not carried over
 
 
+def test_session_device_info_names_the_active_module() -> None:
+    from dataclasses import replace
+
+    from opencoord.core.types import DeviceConfig, ModelInfo
+    from opencoord.device.models import resolve
+
+    c, f = make()
+    model = ModelInfo(main_code=10, expansion_code=4, firmware="03.39")
+    config = DeviceConfig(
+        start_hz=2_400_000_000, step_hz=100_000, amp_top_dbm=0, amp_bottom_dbm=-100,
+        sweep_points=112, expansion_active=True, mode=0, min_hz=2_350_000_000,
+        max_hz=2_550_000_000, max_span_hz=100_000_000, rbw_hz=None, amp_offset_db=None,
+        calculator_mode=None,
+    )  # fmt: skip
+    st = c.state
+    st.model, st.config, st.capabilities = model, config, resolve(model, config)
+    assert st.capabilities is not None
+    device = f.build_session().device
+    assert device is not None
+    assert (device.model_name, device.model_code) == (st.capabilities.name, 4)
+    assert device.model_name != st.capabilities.main_name
+    st.config = replace(config, expansion_active=False)
+    st.capabilities = resolve(model, st.config)
+    device = f.build_session().device
+    assert device is not None and device.model_code == 10
+    assert device.model_name == st.capabilities.main_name
+
+
 def test_export_skips_non_finite_points(tmp_path: Path) -> None:
     c, f = make()
     c.state.references["ref1"] = Trace(

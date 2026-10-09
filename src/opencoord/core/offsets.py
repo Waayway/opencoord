@@ -8,16 +8,23 @@ import numpy.typing as npt
 from opencoord.core.types import DeviceConfig, ModelInfo, Sweep, Trace
 
 
+def active_model_code(model: ModelInfo | None, config: DeviceConfig | None) -> int | None:
+    """Model code of the active module (the expansion's when it is active); ``None`` without a
+    model."""
+    if model is None:
+        return None
+    if config is not None and config.expansion_active and model.expansion_code is not None:
+        return model.expansion_code
+    return model.main_code
+
+
 def offset_key(model: ModelInfo | None, config: DeviceConfig | None) -> str | None:
     """Settings key ``model_<code>`` of the active module; ``None`` before a device reports.
 
     The link exposes no serial number, so offsets are per model code, not per unit.
     """
-    if model is None:
-        return None
-    expansion = config is not None and config.expansion_active and model.expansion_code is not None
-    code = model.expansion_code if expansion else model.main_code
-    return f"model_{code}"
+    code = active_model_code(model, config)
+    return None if code is None else f"model_{code}"
 
 
 def offset_levels(dbm: npt.NDArray[np.float32], offset_db: float) -> npt.NDArray[np.float32]:

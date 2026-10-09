@@ -17,12 +17,12 @@ src/opencoord/
     occupancy.py     pure (done): channel_occupancy(trace, channels, floor_dbm, threshold_db) -> [ChannelOccupancy(number, max_dbm, avg_dbm (power mean), percent_above, coverage 0..1)]
     analysis.py      pure (done): analyze(trace, plan, threshold_dbm) -> Analysis (floor, carriers with channel, occupancy)
     zones.py         pure (done): exclusion zone list helpers (add/update/remove/contains, MAX_EXCLUSION_ZONES = 16)
-    offsets.py       pure (done): offset_key(model, config) = model_<code>, offset_sweep / offset_trace
+    offsets.py       pure (done): active_model_code(model, config) (expansion's code when active; also used for the device info of recordings and sessions), offset_key(model, config) = model_<code>, offset_sweep / offset_trace
     markers.py       Marker (frozen), level_at, peak, next_peak, delta, MAX_MARKERS = 8 (pure, done)
     traces.py        pure (done): TraceSet (live/max/avg/min; average = exact mean of last N, dB domain; axis change — vs the stored axis or any published trace — resets; `restore(live=, max_hold=, average=, min_hold=)` shows saved traces and adopts their axis, averaging window empty),
                      noise_floor (20th percentile), find_peaks (own O(n) prominence, strongest first), detected_carriers
     presets.py       pure (done): RangePreset(name, start_hz, stop_hz), PRESETS (plan §4), available(device_range), find()
-    session.py       (done) Session/SessionSettings/DeviceInfo, pure to_json/from_json + encode_traces/decode_traces, save/load of the .opencoord zip; SessionError (schema 2: plan + coordination dicts)
+    session.py       (done) Session/SessionSettings/DeviceInfo, pure to_json/from_json + encode_traces/decode_traces, save/load of the .opencoord zip; SessionError (schema 2: plan + coordination dicts; `device` = name + code of the *active* module, like recordings)
     settings.py      AppSettings + load()/save() of settings.toml via platformdirs (done)
   coord/
     profiles.py      DeviceProfile, parse/validate/serialise, candidates(), templates (done); spacing.py SpacingRules + presets (done); io/profile_store.py file load/save (done)
@@ -95,7 +95,7 @@ UI "Coordinate" ──▶ worker thread: solver.solve(CoordinationRequest) ─�
   `resolution`, `start_hz`/`stop_hz`, `window_width`/`window_height`, `waterfall_depth` (300, limits
   `WATERFALL_DEPTH_MIN`/`MAX` = 10/1000 shared with the controller and scan panel), `mode` (`live`/`scan`), `threshold_dbm` (optional float, omitted when hidden), `amp_offsets` (`[amp_offsets]` table, device key `model_<code>` -> dB within +/-50; invalid entries dropped, omitted when empty).
   `load()` ignores unknown keys and replaces invalid values by defaults (logged); an unreadable file (OS error,
-  bad TOML, invalid UTF-8) gives defaults. `save()` writes atomically (tmp + replace). The app loads on start and saves on exit.
+  bad TOML, invalid UTF-8) gives defaults. `save()` writes atomically via `io/atomic.write_atomic` (tmp + fsync + replace). The app loads on start and saves on exit.
 - Sessions are user-chosen files: `.opencoord` = zip with `session.json` (`schema_version` 2; version 1 files still open) + `traces.npz`
   (`<name>.freqs_hz` float64, `<name>.dbm` float32 per trace name: live/max/avg/min/scan/ref1..ref4). JSON holds
   `opencoord_version`, `created`/`modified` (UTC ISO), `device` (model_name, model_code, firmware or null),

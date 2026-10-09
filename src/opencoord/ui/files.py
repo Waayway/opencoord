@@ -27,6 +27,7 @@ from opencoord import __version__
 from opencoord.core import session as session_io
 from opencoord.core.analysis import analyze
 from opencoord.core.markers import MAX_MARKERS, Marker
+from opencoord.core.offsets import active_model_code
 from opencoord.core.session import DeviceInfo, Session, SessionError, SessionSettings
 from opencoord.core.types import ExclusionZone, Trace
 from opencoord.core.zones import MAX_EXCLUSION_ZONES
@@ -106,9 +107,11 @@ class FileActions:
         st = self.controller.state
         now = _now()
         device = None
-        if st.model is not None:
-            name = st.capabilities.main_name if st.capabilities else ""
-            device = DeviceInfo(name, st.model.main_code, st.model.firmware)
+        code = active_model_code(st.model, st.config)
+        if st.model is not None and code is not None:
+            # The active module, like recordings: the expansion's name and code when it is active.
+            name = st.capabilities.name if st.capabilities else ""
+            device = DeviceInfo(name, code, st.model.firmware)
         setup, plan = (
             self.coordination.session_parts() if self.coordination is not None else (None, None)
         )

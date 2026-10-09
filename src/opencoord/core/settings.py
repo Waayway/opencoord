@@ -18,6 +18,8 @@ from typing import Any
 import tomli_w
 from platformdirs import user_config_dir
 
+from opencoord.io.atomic import write_atomic
+
 log = logging.getLogger(__name__)
 
 APP_NAME = "opencoord"
@@ -137,14 +139,11 @@ def load(path: Path | None = None) -> AppSettings:
 def save(settings: AppSettings, path: Path | None = None) -> None:
     """Write ``settings`` to ``path`` (default :func:`default_path`), creating the directory."""
     path = path or default_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
     data = dataclasses.asdict(settings)
     data["preset"] = settings.preset or ""
     data = {k: v for k, v in data.items() if v is not None and v != {}}
     text = "# OpenCoord settings (written by the app)\n" + tomli_w.dumps(data)
-    tmp = path.with_suffix(".toml.tmp")
-    tmp.write_text(text, encoding="utf-8")
-    tmp.replace(path)
+    write_atomic(path, text.encode("utf-8"))  # creates the directory too
 
 
 __all__ = [
