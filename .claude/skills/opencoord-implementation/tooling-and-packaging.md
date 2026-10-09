@@ -56,15 +56,20 @@
 - `opencoord.desktop` (passes `desktop-file-validate`; `Exec=opencoord`, `Icon=opencoord`).
 - `99-opencoord-rfexplorer.rules`: `SUBSYSTEM=="tty"`, CP210x `10c4:ea60`, `MODE="0660"`, `TAG+="uaccess"`.
 
-## Docker (`Dockerfile`)
-Base: `ghcr.io/astral-sh/uv:python3.13-bookworm-slim`.
+## Docker (`Dockerfile`, `.dockerignore`, implemented)
+Base: `ghcr.io/astral-sh/uv:python3.13-bookworm-slim` (build arg `UV_IMAGE`). Needs BuildKit/buildx (`--mount`,
+`--output`); on a host without `docker buildx`, drop the `docker-buildx` binary into `~/.docker/cli-plugins/`.
 
 | Stage | Purpose |
 |---|---|
-| `test` | `uv sync --locked`, ruff, pytest (simulator) |
-| `build` | `uv build` + PyInstaller onedir + AppImage via appimagetool (`--appimage-extract-and-run`, no FUSE in containers) |
-| `artifacts` | `FROM scratch`, copies `dist/`. Use `docker build --target artifacts --output dist/ .` |
-| `runtime` (default) | slim image + mesa/X11 libs; run with `--device /dev/ttyUSB0`, X11 socket mount |
+| `test` | copies pyproject/uv.lock/README/LICENSE/src/tests; `uv sync --locked` (venv at `/opt/venv`), `ruff check`, `ruff format --check`, `pytest -m "not ui and not hardware"` |
+| `build` | `uv build --out-dir /out/dist` (wheel + sdist). `TODO(Task 5)` marker: add PyInstaller onedir + AppImage (appimagetool with `--appimage-extract-and-run`, no FUSE) writing to `/out/dist` |
+| `artifacts` | `FROM scratch`, copies `/out/dist/` to `/`. `docker build --target artifacts --output dist/ .` |
+| `runtime` (last = default) | uv base + mesa/X11 apt libs; venv `/opt/venv` with the built wheel (bind-mounted from `build`), `ENTRYPOINT ["opencoord"]`; `opencoord-cli` is reachable with `--entrypoint` |
+
+GUI run command (README, best-effort): `docker run --rm --device /dev/ttyUSB0 -e DISPLAY -v /tmp/.X11-unix:/tmp/.X11-unix ghcr.io/waayway/opencoord`
+(`xhost +local:` may be needed). `.dockerignore` excludes `.git`, `.github`, `.superpowers`, `.claude`, `plans`, `.venv`,
+`result`, `dist`, `build`, caches, and the flake files.
 
 ## PyInstaller & OS packaging
 - One spec: `packaging/opencoord.spec` (onedir; datas: channel plans, profile templates, icons). On macOS it adds a
@@ -83,7 +88,7 @@ Base: `ghcr.io/astral-sh/uv:python3.13-bookworm-slim`.
 | `ci.yml` | on push/PR, cancel-in-progress per ref. Jobs: `lint` (ruff check, ruff format --check, mypy); `test` (ubuntu/windows/macos x py 3.11-3.14, `uv sync --locked --python X` + `uv run --python X pytest -m "not ui and not hardware"`, overrides `.python-version`); `ui-smoke` (apt xvfb + mesa/X11 libs, `xvfb-run -a uv run pytest -m ui`). Actions: checkout@v4, setup-uv@v5 (cache on) |
 | `build.yml` | builds per OS: ubuntu-22.04 (+ `-arm`), windows-latest, macos-14 (+ Intel if available); uploads artifacts |
 | `nix.yml` | on push/PR, cancel-in-progress per ref; ubuntu-latest + macos-latest: DeterminateSystems `nix-installer-action` + `magic-nix-cache-action`, `nix flake check -L`, `nix build -L`, `./result/bin/opencoord --version` |
-| `docker.yml` | build/test stages on PR; on tag, push the runtime image to `ghcr.io/waayway/opencoord` |
+| `docker.yml` | push/PR/tags `v*`: buildx + build-push-action (GHA cache, per-target scopes): `test` target, `runtime` target (loaded, `--version` check), `artifacts` target (`outputs: type=local,dest=dist`, uploaded as `docker-dist`); on `v*` tags also login + metadata + push runtime to `ghcr.io/waayway/opencoord` (`packages: write`) |
 | `release.yml` | on `v*` tag: collect all artifacts + `SHA256SUMS` into a GitHub Release; optional PyPI trusted publishing |
 
 Rule: every shipped artifact must be reproducible from a clean GitHub runner. No manual release steps.
