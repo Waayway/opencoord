@@ -32,6 +32,7 @@ import bisect
 import functools
 import itertools
 import time
+import types
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Literal
@@ -64,6 +65,9 @@ Reason = Literal[
     "time-budget",
 ]
 _RULE_ORDER: tuple[str, ...] = ("carrier", *KINDS)
+#: Most devices one request may ask for (keeps the depth-first search well inside Python's
+#: recursion limit).
+MAX_DEVICES = 200
 
 
 @functools.cache
@@ -114,9 +118,18 @@ class CoordinationRequest:
         object.__setattr__(self, "devices", tuple((p, q) for p, q in self.devices))
         object.__setattr__(self, "locked", tuple(self.locked))
         object.__setattr__(self, "zones", tuple(self.zones))
+        names: set[str] = set()
         for profile, quantity in self.devices:
             if quantity < 0:
                 raise ValueError(f"{profile.name}: quantity must be 0 or more, got {quantity}")
+            if profile.name in names:
+                raise ValueError(
+                    f"profile {profile.name!r} is listed twice; combine the quantities instead"
+                )
+            names.add(profile.name)
+        total = sum(q for _, q in self.devices)
+        if total > MAX_DEVICES:
+            raise ValueError(f"at most {MAX_DEVICES} devices per coordination, got {total}")
         if self.threshold_db < 0:
             raise ValueError(f"threshold must be 0 dB or more, got {self.threshold_db}")
         if self.guard_hz < 0:
@@ -178,6 +191,11 @@ class SolveStats:
 
 @dataclass(frozen=True)
 class Plan:
+    """A coordination result. ``backups`` (read-only, profile name -> frequencies, best first)
+    are chosen greedily round-robin over the profiles, each one checked against the plan, the
+    locked carriers **and every backup chosen before it**: the plan plus all backups together
+    pass ``check``, so any of them can be brought in at the same time."""
+
     assignments: tuple[Assignment, ...]
     unassigned: tuple[Unassigned, ...]
     backups: Mapping[str, tuple[int, ...]]  # profile name -> spare frequencies (best first)
@@ -310,9 +328,15 @@ def _merge(ranges: Sequence[tuple[int, int]]) -> list[tuple[int, int]]:
 
 
 def _profile_ranges(profile: DeviceProfile) -> list[tuple[int, int]]:
-    if profile.tuning and profile.step_hz:
+    """Ranges covering the profile's candidates, from the same source ``candidates()`` uses."""
+    if profile.groups:
+        chans = [c for g in profile.groups for c in g.channels]
+    elif profile.channels:
+        chans = list(profile.channels)
+    elif profile.step_hz:
         return [(r.start_hz, r.stop_hz) for r in profile.tuning]
-    chans = list(profile.channels) + [c for g in profile.groups for c in g.channels]
+    else:
+        chans = []
     return [(min(chans), max(chans))] if chans else []
 
 
@@ -410,6 +434,7 @@ class _Entry:
     groups: tuple[tuple[str, ...], ...] = ()
     members: dict[str, Bools] = field(default_factory=dict)
     reason: Reason | None = None  # set when nothing survives filtering
+    start_empty: bool = False  # every candidate already conflicts with the locked carriers
 
 
 def _prepare(request: CoordinationRequest) -> list[_Entry]:
@@ -504,7 +529,7 @@ class _Search:
                 domains.append(np.empty(0, dtype=np.int64))
         try:
             return self._node(domains)
-        except _Timeout:
+        except (_Timeout, RecursionError):  # MAX_DEVICES keeps the depth well below the limit
             self.timed_out = True
             return False
 
@@ -617,11 +642,9 @@ class _Search:
 # ---------------------------------------------------------------------------- solve
 
 
-def _product_set(
-    entries: Sequence[_Entry], locked: Sequence[_Tx], extra: Sequence[int] = ()
-) -> ProductSet | None:
+def _product_set(entries: Sequence[_Entry], locked: Sequence[_Tx]) -> ProductSet | None:
     ranges = [r for e in entries for r in _profile_ranges(e.profile)]
-    ranges += [(f - 1, f + 1) for f in [t.freq for t in locked] + list(extra)]
+    ranges += [(t.freq - 1, t.freq + 1) for t in locked]
     if not ranges:
         return None
     rules = [e.rules for e in entries] + [t.rules for t in locked]
@@ -637,11 +660,14 @@ def solve(request: CoordinationRequest) -> Plan:
     warnings = _locked_clash_warnings(locked)
 
     best: list[list[Placement]] = [[] for _ in entries]
-    nodes, timed_out = 0, False
+    nodes, timed_out, last_timed_out = 0, False, False
     pset = _product_set(entries, locked)
     if pset is not None:
         for t in locked:
             pset.add(t.freq, t.rules, t.cid)
+        for e in entries:
+            if e.reason is None and e.quantity:
+                e.start_empty = bool(pset.conflict_mask(e.freqs, e.rules).all())
         deadline = started + request.time_budget_s
         grouped = request.prefer_single_group and any(e.members for e in entries)
         passes = [True, False] if grouped else [False]
@@ -654,11 +680,14 @@ def solve(request: CoordinationRequest) -> Plan:
             nodes += search.nodes
             if best_key is None or search.best_key > best_key:
                 best_key, best = search.best_key, search.best
-            timed_out = search.timed_out
+            timed_out = timed_out or search.timed_out
+            last_timed_out = search.timed_out
             if done:
                 break
 
-    return _assemble(request, entries, locked, best, warnings, nodes, timed_out, started)
+    return _assemble(
+        request, entries, locked, best, warnings, nodes, timed_out, last_timed_out, started
+    )
 
 
 def _assemble(
@@ -669,8 +698,11 @@ def _assemble(
     warnings: list[str],
     nodes: int,
     timed_out: bool,
+    cut_off: bool,
     started: float,
 ) -> Plan:
+    """``timed_out``: any pass hit the deadline; ``cut_off``: the last (widest) pass did, so
+    its result is not proven optimal and unplaced devices get the ``time-budget`` reason."""
     txs = list(locked)
     rows: list[tuple[str, _Entry, int, str | None, float | None]] = []
     for i, e in enumerate(entries):
@@ -694,34 +726,22 @@ def _assemble(
 
     names = {t.cid: t.label for t in txs}
     unassigned: list[Unassigned] = []
-    backups: dict[str, tuple[int, ...]] = {}
     used = {t.freq for t in txs}
     for i, e in enumerate(entries):
         if not e.quantity:
             continue
-        n_placed = len(best[i])
         if e.reason is not None:
             unassigned += [Unassigned(lb, e.profile.name, e.reason) for lb in e.labels]
             continue
-        free = np.empty(0, dtype=np.int64)
-        if final is not None:
-            spare = ~np.isin(e.freqs, list(used))
-            free = np.flatnonzero(spare & ~final.conflict_mask(e.freqs, e.rules))
-            groups = {g for _, g in best[i]}
-            if e.members and len(groups) == 1 and None not in groups:
-                (g,) = groups
-                free = free[np.argsort(~e.members[str(g)][free], kind="stable")]
-        if e.profile.name not in backups:
-            backups[e.profile.name] = tuple(
-                int(f) for f in e.freqs[free[: request.backups_per_profile]]
-            )
-        reason: Reason = "time-budget" if timed_out else "imd-conflicts"
-        explain = None
-        if n_placed < e.quantity and final is not None:
-            explain = _explain(final, e, used, names)
+        n_placed = len(best[i])
+        if n_placed == e.quantity:
+            continue
+        reason: Reason = "time-budget" if cut_off and not e.start_empty else "imd-conflicts"
+        explain = None if final is None else _explain(final, e, used, names)
         unassigned += [
             Unassigned(lb, e.profile.name, reason, explain) for lb in e.labels[n_placed:]
         ]
+    backups = _backups(request, entries, best, final, used)
 
     total = sum(e.quantity for e in entries)
     stats = SolveStats(
@@ -730,7 +750,52 @@ def _assemble(
         complete=len(assignments) == total,
         timed_out=timed_out,
     )
-    return Plan(tuple(assignments), tuple(unassigned), backups, tuple(warnings), stats)
+    return Plan(
+        tuple(assignments),
+        tuple(unassigned),
+        types.MappingProxyType(backups),
+        tuple(warnings),
+        stats,
+    )
+
+
+def _backups(
+    request: CoordinationRequest,
+    entries: Sequence[_Entry],
+    best: Sequence[Sequence[Placement]],
+    final: ProductSet | None,
+    used: set[int],
+) -> dict[str, tuple[int, ...]]:
+    """Spare frequencies per profile, mutually compatible with each other and the plan.
+
+    Round-robin over the profiles, each taking its best-ranked candidate (its single group
+    first) that is clean against the plan and every backup chosen so far; each pick is added
+    to ``final`` before the next one is masked.
+    """
+    ranked: list[tuple[_Entry, I64]] = []
+    for i, e in enumerate(entries):
+        if e.reason is not None or not e.quantity:
+            continue
+        order = np.arange(e.freqs.size, dtype=np.int64)
+        groups = {g for _, g in best[i]}
+        if e.members and len(groups) == 1 and None not in groups:
+            (g,) = groups
+            order = order[np.argsort(~e.members[str(g)], kind="stable")]
+        ranked.append((e, order))
+    picked: dict[str, list[int]] = {e.profile.name: [] for e, _ in ranked}
+    if final is None:
+        return dict.fromkeys(picked, ())
+    taken = set(used)
+    for r in range(request.backups_per_profile):
+        for e, order in ranked:
+            free = order[~np.isin(e.freqs[order], list(taken))]
+            clean = free[~final.conflict_mask(e.freqs[free], e.rules)]
+            if clean.size:
+                f = int(e.freqs[clean[0]])
+                final.add(f, e.rules, ("backup", e.profile.name, r))
+                taken.add(f)
+                picked[e.profile.name].append(f)
+    return {name: tuple(fs) for name, fs in picked.items()}
 
 
 def _explain(
@@ -757,16 +822,19 @@ def _nearest_products(pset: ProductSet | None, txs: Sequence[_Tx]) -> dict[Carri
     if pset is None:
         return {}
     products = pset.products()
-    if not products:
+    if not products or not txs:
         return {}
+    column = {t.cid: k for k, t in enumerate(txs)}
+    rows = [n for n, p in enumerate(products) for _ in p.terms]
+    cols = [column[cid] for p in products for cid in p.sources]
+    own = np.zeros((len(products), len(txs)), dtype=bool)
+    own[rows, cols] = True
     freqs = np.array([p.freq_hz for p in products], dtype=np.int64)
-    out: dict[CarrierId, int] = {}
-    for t in txs:
-        own = np.array([t.cid in p.sources for p in products], dtype=bool)
-        if own.all():
-            continue
-        out[t.cid] = int(np.abs(freqs[~own] - t.freq).min())
-    return out
+    carriers = np.array([t.freq for t in txs], dtype=np.int64)
+    dist = np.abs(freqs[:, None] - carriers[None, :])
+    dist[own] = np.iinfo(np.int64).max
+    nearest = dist.min(axis=0)
+    return {t.cid: int(nearest[k]) for k, t in enumerate(txs) if not own[:, k].all()}
 
 
 # ---------------------------------------------------------------------------- check
@@ -824,6 +892,7 @@ def check(assignments: Sequence[Assignment], request: CoordinationRequest) -> Ch
 
 
 __all__ = [
+    "MAX_DEVICES",
     "Assignment",
     "CheckReport",
     "CoordinationRequest",

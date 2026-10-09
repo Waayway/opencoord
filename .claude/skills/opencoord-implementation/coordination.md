@@ -100,7 +100,9 @@ largest IMD spacing; untracked kinds or bigger values later raise `ValueError`):
 Pure. `solve(request) -> Plan`, `check(assignments, request) -> CheckReport`.
 
 `CoordinationRequest` (frozen; sequences normalised to tuples; `ValueError` for negative quantity / threshold /
-guard / backups or a budget <= 0): `devices` = `(DeviceProfile, quantity)` pairs; `locked` =
+guard / backups, a budget <= 0, a profile name listed twice, or more than `MAX_DEVICES` = 200 devices in total,
+which keeps the recursive search well inside Python's recursion limit; a `RecursionError` would still just end
+the pass like a timeout): `devices` = `(DeviceProfile, quantity)` pairs; `locked` =
 `LockedCarrier(freq_hz, label, rules)` (foreign transmitters / already-tuned devices; `rules` default to the built-in
 `generic-analog` preset values); `scan: Trace | None`; `zones` (`ExclusionZone`s); `channel_plan` +
 `allow_forbidden=False`; `threshold_db=10`; `guard_hz=100_000`; `prefer_single_group=True`; `time_budget_s=5.0`;
@@ -110,8 +112,7 @@ name -> `ValueError`); `clock` (injectable, default `time.monotonic`). Profile r
 `resolve_profile_rules(presets[p.spacing_preset], p.spacing_overrides, run_override)`.
 
 Steps:
-1. Candidates per `(profile, quantity)` entry: `profiles.candidates()`. Device labels `"<profile name> #n"`, numbered
-   per profile name across entries.
+1. Candidates per `(profile, quantity)` entry: `profiles.candidates()`. Device labels `"<profile name> #n"`.
 2. Filters, in order, each giving the reason when nothing is left: no candidates -> `no-candidates-in-range`;
    zones (edges inclusive) and forbidden plan bands/channels (`[start, stop)`, skipped unless `allow_forbidden`) ->
    `all-candidates-excluded`; occupied -> `all-candidates-occupied`. Scan level of a candidate = max of the scan within
@@ -119,8 +120,8 @@ Steps:
    uses its two neighbouring bins; outside the span = unknown (`nan`). Occupied = level > `noise_floor(scan) +
    threshold_db`.
 3. Rank: legal before allowed-forbidden, known level before unknown, quietest, then lowest frequency.
-4. `ProductSet` ranges = merged union of every profile's tuning ranges (`min..max` of channels for fixed/grouped
-   sets) plus each locked carrier ±1 Hz; rules = all profile + locked rules (up front). Locked carriers are added
+4. `ProductSet` ranges = merged union over profiles of the ranges of the source `candidates()` uses (groups, else
+   channels: `min..max`; else the tuning ranges) plus each locked carrier ±1 Hz; rules = all profile + locked rules (up front). Locked carriers are added
    first; each entry's initial domain is its ranked candidates filtered by `conflict_mask`.
 5. Depth-first branch and bound (`_Search`): next = the entry with the fewest usable candidates (dynamic
    most-constrained-first; domains forward-checked with `conflict_mask` after each placement). Instances of one
@@ -136,11 +137,15 @@ Steps:
 
 `Plan`: `assignments` (`Assignment(label, profile_name, freq_hz, group, scan_level_dbm, nearest_imd_margin_hz)`,
 entry order, sorted by frequency within an entry; `nearest_imd_margin_hz` = distance to the nearest stored product
-the carrier is not a source of, `None` if none), `unassigned` (`Unassigned(label, profile_name, reason, blocked_by)`;
-search failures are `imd-conflicts` (incl. carrier spacing) or `time-budget` if the last pass timed out;
+the carrier is not a source of, `None` if none; vectorised products x carriers matrix), `unassigned` (`Unassigned(label, profile_name, reason, blocked_by)`;
+search failures are `imd-conflicts` (incl. carrier spacing; always when every candidate already conflicts with
+the locked carriers) or `time-budget` when the last (widest) pass hit the deadline; `stats.timed_out` = any pass
+did;
 `blocked_by` = `nearest_conflict` of the best-ranked unused candidate against the final plan), `backups`
-(profile name -> up to `backups_per_profile` unused candidates compatible with the whole plan, rank order, the
-chosen group first), `warnings` (clashes among locked carriers, assignments in forbidden bands), `stats`
+(read-only `MappingProxyType`, profile name -> up to `backups_per_profile` frequencies; chosen greedily round-robin
+over the profiles, each the best-ranked unused candidate (its single group first) that is clean against the plan,
+the locked carriers **and every backup chosen before it**, which is then `add`ed to the final product set: plan +
+all backups together pass `check`), `warnings` (clashes among locked carriers, assignments in forbidden bands), `stats`
 (`SolveStats(elapsed_s, nodes, complete, timed_out)`).
 
 `check`: carriers = locked + the given assignments (rules by `profile_name`; unknown profile or duplicate label ->
@@ -150,10 +155,11 @@ max of that kind over sources and victim. Violations involving a device are `vio
 forbidden bands, zones, occupied spots and frequencies that are not candidates of the profile are `warnings`.
 
 Tests (`tests/coord/test_solver.py`): Hypothesis invariant (random profiles/groups/locked/zones/scan/override:
-every plan and every backup passes `check`), exhaustive search == brute-force maximum on small fixed sets,
+the plan plus all backups jointly pass `check`), exhaustive search == brute-force maximum on small fixed sets,
 determinism, fake-clock time budget. Measured: 16 generic-analog devices in 470–694 MHz (25 kHz) 0.035 s / 17
-nodes; 40 devices complete in 0.25 s / 41 nodes; 60 devices hit the 5 s budget with 47 placed (returns ~0.3 s
-after the deadline: node granularity plus assembling the result).
+nodes; 40 devices complete in 0.25 s / 41 nodes; 60–200 devices hit the 5 s budget with 46–47 placed (returns
+~0.08 s after the deadline: node granularity plus assembling the result); 200 devices with 50 kHz carrier spacing
+only complete in ~0.3 s.
 
 ## Channel plans (`coord/channel_plans/*.toml`) (done)
 Pure data, parsed by the pure `parse_plan(text, name) -> ChannelPlan` (`channel_plans/model.py`; `ValueError` on

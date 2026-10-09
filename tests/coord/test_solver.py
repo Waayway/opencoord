@@ -15,6 +15,7 @@ from hypothesis import strategies as st
 from opencoord.coord.channel_plans.model import BandAnnotation, ChannelPlan
 from opencoord.coord.profiles import ChannelGroup, DeviceProfile, TuningRange
 from opencoord.coord.solver import (
+    MAX_DEVICES,
     Assignment,
     CoordinationRequest,
     LockedCarrier,
@@ -134,6 +135,31 @@ def test_negative_quantity_rejected() -> None:
         CoordinationRequest(devices=[(tuned(), -1)])
 
 
+def test_duplicate_profile_names_rejected() -> None:
+    with pytest.raises(ValueError, match="'Mic' is listed twice"):
+        CoordinationRequest(devices=[(tuned(), 1), (tuned(lo_mhz=620, hi_mhz=630), 2)])
+
+
+def test_total_quantity_is_capped() -> None:
+    with pytest.raises(ValueError, match=str(MAX_DEVICES)):
+        CoordinationRequest(devices=[(tuned(), MAX_DEVICES + 1)])
+
+
+def test_max_devices_returns_without_recursion_error() -> None:
+    profile = DeviceProfile(
+        "D", "iem", "z", tuning=(TuningRange(470 * MHZ, 694 * MHZ),), step_hz=25 * KHZ
+    )
+    req = CoordinationRequest(
+        devices=[(profile, MAX_DEVICES)],
+        presets={"z": SpacingRules(carrier=50 * KHZ)},
+        time_budget_s=2.0,
+    )
+    plan = solve(req)
+    assert len(plan.assignments) + len(plan.unassigned) == MAX_DEVICES
+    assert plan.stats.complete
+    assert_clean(plan, req)
+
+
 # ---------------------------------------------------------------- filtering and reasons
 
 
@@ -238,6 +264,20 @@ def test_unknown_level_ranks_after_known_quiet() -> None:
 
     plan = solve(CoordinationRequest(devices=[(tuned(), 1)]))
     assert plan.assignments[0].scan_level_dbm is None
+
+
+def test_ranges_follow_the_candidate_source() -> None:
+    # groups win over tuning in candidates(); the product window must cover them
+    odd = DeviceProfile(
+        "Odd",
+        "mic",
+        "generic-analog",
+        tuning=(TuningRange(600 * MHZ, 601 * MHZ),),
+        step_hz=25 * KHZ,
+        groups=(ChannelGroup("A", (650 * MHZ, 652 * MHZ)),),
+    )
+    plan = solve(CoordinationRequest(devices=[(odd, 2)]))
+    assert sorted(a.freq_hz for a in plan.assignments) == [650 * MHZ, 652 * MHZ]
 
 
 # ---------------------------------------------------------------- locked carriers
@@ -426,6 +466,22 @@ def test_time_budget_returns_best_partial() -> None:
     assert_clean(plan, req)
 
 
+def test_blocked_from_the_start_is_imd_conflicts_even_on_timeout() -> None:
+    # every candidate of "Blocked" sits on the locked carrier; the search itself times out
+    blocked = fixed("Blocked", [605.0])
+    req = CoordinationRequest(
+        devices=[(tuned(), 8), (blocked, 1)],
+        locked=[LockedCarrier(605 * MHZ, "L")],
+        time_budget_s=4.0,
+        clock=FakeClock(1.0),
+    )
+    plan = solve(req)
+    assert plan.stats.timed_out
+    reasons = {u.label: u.reason for u in plan.unassigned}
+    assert reasons["Blocked #1"] == "imd-conflicts"
+    assert any(r == "time-budget" for lb, r in reasons.items() if lb.startswith("Mic"))
+
+
 # ---------------------------------------------------------------- output details
 
 
@@ -436,14 +492,38 @@ def test_backups_are_compatible_with_the_whole_plan() -> None:
     assert set(plan.backups) == {"Mic", "F"}
     assert len(plan.backups["Mic"]) == 2
     used = {a.freq_hz for a in plan.assignments}
-    for name, freqs in plan.backups.items():
-        for f in freqs:
-            assert f not in used
-            extra = Assignment("Backup", name, f)
-            assert check([*plan.assignments, extra], req).violations == ()
+    assert not used & {f for fs in plan.backups.values() for f in fs}
+    assert_jointly_clean(plan, req)
 
     none = solve(CoordinationRequest(devices=[(tuned(), 1)], backups_per_profile=0))
     assert none.backups == {"Mic": ()}
+    with pytest.raises(TypeError):
+        none.backups["Mic"] = (1,)  # type: ignore[index]
+
+
+def assert_jointly_clean(plan: Plan, req: CoordinationRequest) -> None:
+    spares = [
+        Assignment(f"{name} backup {k + 1}", name, f)
+        for name, fs in plan.backups.items()
+        for k, f in enumerate(fs)
+    ]
+    assert len({a.freq_hz for a in spares}) == len(spares)
+    assert check([*plan.assignments, *spares], req).violations == ()
+
+
+def test_backups_are_mutually_compatible() -> None:
+    # review case: four backups used to cluster within one guard width of each other
+    req = CoordinationRequest(devices=[(tuned(), 3)], backups_per_profile=4)
+    plan = solve(req)
+    assert len(plan.backups["Mic"]) == 4
+    assert_jointly_clean(plan, req)
+    # two profiles over the same range: backups neither coincide nor clash across profiles
+    req = CoordinationRequest(
+        devices=[(tuned(), 2), (tuned("Other", 600.0, 610.0), 2)], backups_per_profile=3
+    )
+    plan = solve(req)
+    assert len(plan.backups["Mic"]) == 3 and len(plan.backups["Other"]) == 3
+    assert_jointly_clean(plan, req)
 
 
 def test_nearest_imd_distance() -> None:
@@ -615,10 +695,7 @@ def test_no_returned_plan_violates_any_rule(req: CoordinationRequest) -> None:
     assert plan.stats.complete == (len(plan.unassigned) == 0)
     for a in plan.assignments:
         assert not any(z.start_hz <= a.freq_hz <= z.stop_hz for z in req.zones)
-    for name, freqs in plan.backups.items():
-        for f in freqs:
-            extra = Assignment("Backup", name, f)
-            assert check([*plan.assignments, extra], req).violations == ()
+    assert_jointly_clean(plan, req)
 
 
 # ---------------------------------------------------------------- performance
@@ -648,6 +725,6 @@ def test_performance_40_devices_within_budget() -> None:
         plan.stats.nodes,
         len(plan.assignments),
     )
-    assert elapsed < 5.0 + 2.0  # budget plus assembling the result
-    assert len(plan.assignments) + len(plan.unassigned) == 40
+    assert elapsed < 5.0
+    assert plan.stats.complete
     assert_clean(plan, req)
