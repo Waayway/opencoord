@@ -1,8 +1,11 @@
 """Sessions: the ``.opencoord`` file (a zip with ``session.json`` and ``traces.npz``).
 
 ``to_json``/``from_json`` and ``encode_traces``/``decode_traces`` are pure; ``save``/``load`` do the
-zip I/O. ``session.json`` carries ``schema_version`` (1); a newer version is refused with a clear
-error and missing optional fields fall back to defaults. ``traces.npz`` holds, per trace name,
+zip I/O. ``session.json`` carries ``schema_version`` (2; version 1 files, whose ``plan`` was an
+always-null placeholder, still open); a newer version is refused with a clear error and missing
+optional fields fall back to defaults. ``plan`` (a solved frequency plan) and ``coordination``
+(the Coordination tab's setup) are JSON objects kept as dicts here; the UI layer decodes them
+(``ui/coordination_model.py``). ``traces.npz`` holds, per trace name,
 ``<name>.freqs_hz`` (float64) and ``<name>.dbm`` (float32); the labels live in ``session.json``.
 """
 
@@ -25,7 +28,7 @@ from opencoord.core.markers import Marker
 from opencoord.core.types import ExclusionZone, Trace
 from opencoord.io.atomic import write_atomic
 
-SCHEMA_VERSION: Final = 1
+SCHEMA_VERSION: Final = 2
 SESSION_SUFFIX: Final = ".opencoord"
 _JSON_NAME: Final = "session.json"
 _NPZ_NAME: Final = "traces.npz"
@@ -77,8 +80,10 @@ class Session:
     traces: dict[str, Trace] = field(default_factory=dict, compare=False)
     markers: list[Marker] = field(default_factory=list)
     exclusion_zones: list[ExclusionZone] = field(default_factory=list)
-    #: Reserved for the frequency plan (Task 22).
+    #: The solved frequency plan (``coordination_model.result_to_dict``), ``None`` if none.
     plan: dict[str, Any] | None = None
+    #: The coordination setup: device rows, locked carriers, options (``CoordinationModel``).
+    coordination: dict[str, Any] | None = None
     device: DeviceInfo | None = None
     created: str = ""
     modified: str = ""
@@ -121,6 +126,7 @@ def to_json(session: Session) -> str:
             for z in session.exclusion_zones
         ],
         "plan": session.plan,
+        "coordination": session.coordination,
     }
     return json.dumps(doc, indent=2, ensure_ascii=False) + "\n"
 
@@ -212,6 +218,7 @@ def from_json(text: str, arrays: Arrays | None = None) -> Session:
             for z in _records(doc, "exclusion_zones")
         ],
         plan=_get(doc, "plan", dict, None),
+        coordination=_get(doc, "coordination", dict, None),
         device=device,
         created=_get(doc, "created", str, ""),
         modified=_get(doc, "modified", str, ""),

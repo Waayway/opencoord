@@ -46,6 +46,8 @@ def full_session() -> Session:
         markers=[Marker(1, 600_000_000, "max"), Marker(2, 601_000_000, "ref1")],
         exclusion_zones=[ExclusionZone(1, 500_000_000, 510_000_000)],
         device=DeviceInfo("WSUB1G+", 18, "01.36"),
+        plan={"assignments": [{"label": "Mic #1", "freq_hz": 600_125_000}]},
+        coordination={"devices": [{"profile": "Mic", "quantity": 2}]},
         created="2026-10-09T10:00:00+00:00",
         modified="2026-10-09T11:00:00+00:00",
         opencoord_version="0.1.0",
@@ -56,8 +58,9 @@ def test_json_round_trip() -> None:
     s = full_session()
     back = from_json(to_json(s))
     assert back == s
-    assert json.loads(to_json(s))["schema_version"] == 1
-    assert json.loads(to_json(s))["plan"] is None
+    doc = json.loads(to_json(s))
+    assert doc["schema_version"] == 2
+    assert doc["plan"] == s.plan and doc["coordination"] == s.coordination
 
 
 def test_save_load_round_trip(tmp_path: Path) -> None:
@@ -90,7 +93,19 @@ def test_missing_optional_fields_default() -> None:
 
 def test_future_version_is_clear_error() -> None:
     with pytest.raises(SessionError, match="newer"):
-        from_json('{"schema_version": 2}')
+        from_json('{"schema_version": 3}')
+
+
+def test_version_1_sessions_still_open() -> None:
+    """Version 1 had a ``plan: null`` placeholder and no coordination setup."""
+    s = from_json('{"schema_version": 1, "plan": null, "markers": [{"id": 1, "freq_hz": 5}]}')
+    assert s.plan is None and s.coordination is None and len(s.markers) == 1
+
+
+@pytest.mark.parametrize("key", ["plan", "coordination"])
+def test_plan_and_coordination_must_be_objects(key: str) -> None:
+    with pytest.raises(SessionError, match=key):
+        from_json(f'{{"schema_version": 2, "{key}": [1]}}')
 
 
 @pytest.mark.parametrize(
