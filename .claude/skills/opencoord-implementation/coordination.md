@@ -1,6 +1,7 @@
 # Coordination engine
 
-Status: profiles + spacing (`coord/profiles.py`, `coord/spacing.py`, `io/profile_store.py`) are done; imd, solver (planned).
+Status: profiles + spacing (`coord/profiles.py`, `coord/spacing.py`, `io/profile_store.py`) and the IMD engine
+(`coord/imd.py`) are done; solver (planned).
 
 ## Device profiles (`coord/profiles.py`, `coord/spacing.py`, `io/profile_store.py`) (done)
 Stored as TOML in `<platformdirs config>/profiles/` (spacing presets in `<config>/spacing/`). Built-in templates ship
@@ -50,17 +51,49 @@ im3_2tx = 100                # fields: carrier im3_2tx im3_3tx im5_2tx im7_2tx i
 - Templates: Generic analog mic, Generic IEM, Generic digital, Fixed-channel set.
 - Every rejection records `(rule, required_khz, actual_khz, other_carrier)` so the UI can explain it (planned, solver).
 
-## IMD math (`coord/imd.py`)
-Products for carriers `f`:
-- 3rd order, 2-transmitter: `2·fi − fj`
-- 3rd order, 3-transmitter: `fi + fj − fk`
-- 5th order, 2-transmitter: `3·fi − 2·fj`
-- 7th order, 2-transmitter: `4·fi − 3·fj`
-- 5th order, 3-transmitter (advanced, off by default): `2·fi + fj − 2·fk`, …
+## IMD math (`coord/imd.py`) (done)
+Pure, exact `int64` Hz arithmetic (no float rounding). Kinds = the `SpacingRules` IMD fields (`imd.KINDS`), products
+always over **distinct** carriers:
+- `im3_2tx` 3rd order, 2-Tx: `2a − b` (ordered pairs)
+- `im3_3tx` 3rd order, 3-Tx: `a + b − c` (`{a, b}` unordered, `c` the third)
+- `im5_2tx` 5th order, 2-Tx: `3a − 2b`
+- `im7_2tx` 7th order, 2-Tx: `4a − 3b`
+- `im5_3tx` 5th order, 3-Tx (advanced, off by default): **both** 5th-order 3-carrier forms whose coefficients sum
+  to 1 (so they land near the carriers): `2a + b − 2c` (6 orderings per triple) and `3a − b − c` (3 per triple).
 
 **Defaults: 3rd + 5th + 7th on** in every seeded preset.
-Products are kept incrementally while the solver places carriers, because recomputing the O(n³) 3-Tx set each time
-is too slow. Vectorised with numpy broadcasting. Only products inside the union of tuning ranges ± max spacing are kept.
+
+**Rules (decided):** a product and the carrier it lands on (the victim) conflict when `|product − victim| < required`,
+`required` = the **max** of that kind over the victim's rules and every source carrier's rules (stricter of all
+involved). A carrier is never the victim of its own product. Carrier–carrier: `|a − b| < resolve(a, b).carrier`.
+
+`ProductSet(ranges, rules)` (ranges = candidate tuning ranges `(start_hz, stop_hz)`; `rules` = every
+`SpacingRules` that will be added or checked; it fixes the tracked kinds (any value > 0) and the window margin =
+largest IMD spacing; untracked kinds or bigger values later raise `ValueError`):
+- `add(carrier_hz, rules, carrier_id)` / `remove(carrier_id)` are exact inverses (backtracking); each carrier
+  keeps its own resolved rules. Ids are any hashable; duplicate id → `ValueError`, unknown → `KeyError`.
+- Internally each **check form** keeps sorted `int64` targets `T` grouped by required spacing; a candidate `x`
+  violates an entry when `|m·x − T| < max(required, candidate rule)`. `m = 1` forms are the products (x is hit);
+  `m > 1` forms cover products that x would **create** landing on a placed carrier (x as aggressor), e.g.
+  `2x − b = v` ⇔ `|2x − (b + v)|`. Aggressor roles with coefficient ±1 coincide with an `m = 1` form and share it.
+  13 forms in `_FORMS`. New entries per `add` are vectorised (pairs/triples via `triu_indices` / off-diagonal
+  index arrays, O(n²) per added carrier for 3-Tx).
+- Range limiting: a target is kept only if `m·lo − margin ≤ T ≤ m·hi + margin` for some range; therefore
+  candidates must lie inside the ranges (`ValueError` "outside the product window" otherwise). Locked carriers
+  may lie anywhere.
+- `nearest_conflict(candidate_hz, rules) -> Conflict | None`: carrier spacing vs all placed, products on the
+  candidate, and products the candidate creates on placed carriers. Returns the worst: largest
+  `required − actual`, then smallest `actual`, then rule order (carrier, im3_2tx, im3_3tx, im5_2tx, im7_2tx,
+  im5_3tx). `Conflict(rule, required_hz, actual_hz, sources, victim, product_hz)`: `sources` = placed carriers
+  involved (incl. the victim), `victim` = `None` if the candidate is hit, `product_hz` = `None` for carrier rule.
+- `conflict_mask(candidates_hz, rules) -> bool array`: vectorised `nearest_conflict(...) is not None`
+  (searchsorted per form/group); the solver filters with this and calls `nearest_conflict` only to explain.
+- `products()` (m = 1 entries as `Product(kind, freq_hz, terms=((coef, id), ...))`, `.sources`, `.order`),
+  `carriers()`, `carrier_ids()`, `entry_count()`, `snapshot()` (order-independent state for tests).
+- Measured (tests/coord/test_imd.py bench, 470–694 MHz, 8961 candidates at 25 kHz, 40 carriers first-fit):
+  default orders 0.08 s total (mask 1.3 ms/call, nearest_conflict ~25 µs); with im5_3tx 0.12 s, ~115k entries.
+- Tests: Hypothesis incremental == from-scratch (products vs an itertools brute force, and full `snapshot()` vs a
+  fresh set), and `nearest_conflict` / `conflict_mask` vs a brute-force oracle on ≤ 6 carriers on a small grid.
 
 ## Solver (`coord/solver.py`)
 Input: `CoordinationRequest`, which contains
