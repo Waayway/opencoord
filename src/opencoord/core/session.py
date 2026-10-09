@@ -34,6 +34,8 @@ _JSON_NAME: Final = "session.json"
 _NPZ_NAME: Final = "traces.npz"
 #: Largest total uncompressed size accepted when reading a session (zip bomb guard).
 MAX_UNCOMPRESSED_BYTES: Final = 256 * 1024 * 1024
+#: Highest frequency accepted in the saved settings range (``0 <= start < stop <= this``).
+MAX_SETTINGS_HZ: Final = 100_000_000_000
 _READ_ERRORS: Final = (
     zlib.error,
     NotImplementedError,
@@ -191,6 +193,10 @@ def from_json(text: str, arrays: Arrays | None = None) -> Session:
         overlay_enabled=_get(raw, "overlay_enabled", bool, d.overlay_enabled),
         channel_plan=_get(raw, "channel_plan", str, d.channel_plan),
     )
+    if not 0 <= settings.start_hz < settings.stop_hz <= MAX_SETTINGS_HZ:
+        raise SessionError(
+            "Invalid session: the frequency range must satisfy 0 <= start < stop <= 100 GHz"
+        )
     device_raw = _get(doc, "device", dict, None)
     device = (
         None
@@ -265,7 +271,8 @@ def decode_traces(data: bytes) -> Arrays:
 
 
 def build_traces(labels: Mapping[str, str], arrays: Arrays) -> dict[str, Trace]:
-    """Traces named in ``labels`` that have arrays; mismatched or non-finite data is an error."""
+    """Traces named in ``labels`` that have arrays; mismatched or non-finite data, or a frequency
+    axis that is not strictly increasing, is an error."""
     out: dict[str, Trace] = {}
     for name, label in labels.items():
         if name not in arrays:
@@ -275,6 +282,10 @@ def build_traces(labels: Mapping[str, str], arrays: Arrays) -> dict[str, Trace]:
             raise SessionError(f"Invalid session: trace '{name}' has inconsistent data")
         if not (np.isfinite(freqs).all() and np.isfinite(dbm).all()):
             raise SessionError(f"Invalid session: trace '{name}' has non-finite values")
+        if len(freqs) > 1 and not (np.diff(freqs) > 0).all():
+            raise SessionError(
+                f"Invalid session: trace '{name}' frequencies are not strictly increasing"
+            )
         out[name] = Trace(freqs, dbm, label)
     return out
 

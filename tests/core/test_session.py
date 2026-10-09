@@ -216,7 +216,7 @@ def test_non_finite_threshold_is_dropped() -> None:
         threshold_dbm=st.none() | st.floats(-150, 20, allow_nan=False),
         overlay_enabled=st.booleans(),
         channel_plan=st.none() | st.text(max_size=20),
-    ),
+    ).filter(lambda s: s.start_hz < s.stop_hz),
     st.lists(
         st.builds(
             Marker,
@@ -276,3 +276,39 @@ def test_session_with_bare_npy_traces_does_not_open(tmp_path: Path) -> None:
         z.writestr("traces.npz", buf.getvalue())
     with pytest.raises(ses.SessionError):
         ses.load(path)
+
+
+@pytest.mark.parametrize(
+    ("start", "stop"),
+    [
+        (-1, 100_000_000),
+        (500_000_000, 500_000_000),
+        (600_000_000, 500_000_000),
+        (1, 100_000_000_001),
+        (10**30, 10**31),
+    ],
+)
+def test_out_of_range_settings_are_rejected(start: int, stop: int) -> None:
+    doc = {"schema_version": 2, "settings": {"start_hz": start, "stop_hz": stop}}
+    with pytest.raises(ses.SessionError, match="frequency range"):
+        ses.from_json(json.dumps(doc))
+
+
+def test_settings_range_limits_are_inclusive() -> None:
+    doc = {"schema_version": 2, "settings": {"start_hz": 0, "stop_hz": 100_000_000_000}}
+    s = ses.from_json(json.dumps(doc)).settings
+    assert (s.start_hz, s.stop_hz) == (0, 100_000_000_000)
+
+
+@pytest.mark.parametrize(
+    "freqs", [[1e8, 1e8, 2e8], [3e8, 2e8, 1e8], [1e8, 3e8, 2e8]], ids=["flat", "down", "zigzag"]
+)
+def test_traces_must_have_strictly_increasing_frequencies(freqs: list[float]) -> None:
+    arrays = {"live": (np.array(freqs), np.zeros(3, dtype=np.float32))}
+    with pytest.raises(ses.SessionError, match="increasing"):
+        ses.build_traces({"live": "Live"}, arrays)
+
+
+def test_single_point_trace_is_accepted() -> None:
+    arrays = {"live": (np.array([1e8]), np.zeros(1, dtype=np.float32))}
+    assert len(ses.build_traces({"live": "Live"}, arrays)["live"].dbm) == 1
