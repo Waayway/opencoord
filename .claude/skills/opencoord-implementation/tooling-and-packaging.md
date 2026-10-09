@@ -38,7 +38,8 @@
     fallback is what makes `nix run` work on non-NixOS hosts (glvnd otherwise finds no GLX vendor:
     `GLX: No GLXFBConfigs returned` → assertion crash). Cost: mesa adds ~1 GiB to the closure (total ~1.3 GiB).
     Installs `packaging/linux/opencoord.desktop` → `$out/share/applications/` and
-    `packaging/linux/99-opencoord-rfexplorer.rules` → `$out/lib/udev/rules.d/` (all systems). No icon yet.
+    `packaging/linux/99-opencoord-rfexplorer.rules` → `$out/lib/udev/rules.d/` (all systems). The flake does not install the icon yet
+    (`packaging/icons/opencoord-*.png` exist; hicolor install is a TODO).
   - `apps.default`: `nix run` launches the GUI.
   - `devShells.default`: `uv`, `python313`, `ruff`, `nixfmt`; `UV_PYTHON_DOWNLOADS=never`,
     `UV_PYTHON=${python.interpreter}`; on Linux `LD_LIBRARY_PATH` = runtime libs + `libstdc++` (uv's unpatched
@@ -55,6 +56,8 @@
 ## Linux desktop files (`packaging/linux/`, implemented)
 - `opencoord.desktop` (passes `desktop-file-validate`; `Exec=opencoord`, `Icon=opencoord`).
 - `99-opencoord-rfexplorer.rules`: `SUBSYSTEM=="tty"`, CP210x `10c4:ea60`, `MODE="0660"`, `TAG+="uaccess"`.
+- `io.github.waayway.opencoord.metainfo.xml`: AppStream metadata (passes `appstreamcli validate`), used by the
+  AppImage. `make-appimage.sh` lives here too (see below).
 
 ## Docker (`Dockerfile`, `.dockerignore`, implemented)
 Base: `ghcr.io/astral-sh/uv:python3.13-bookworm-slim` (build arg `UV_IMAGE`). Needs BuildKit/buildx (`--mount`,
@@ -63,7 +66,7 @@ Base: `ghcr.io/astral-sh/uv:python3.13-bookworm-slim` (build arg `UV_IMAGE`). Ne
 | Stage | Purpose |
 |---|---|
 | `test` | copies pyproject/uv.lock/README/LICENSE/src/tests; `uv sync --locked` (venv at `/opt/venv`), `ruff check`, `ruff format --check`, `pytest -m "not ui and not hardware"` |
-| `build` | `uv build --out-dir /out/dist` (wheel + sdist). `TODO(Task 5)` marker: add PyInstaller onedir + AppImage (appimagetool with `--appimage-extract-and-run`, no FUSE) writing to `/out/dist` |
+| `build` | apt `binutils ca-certificates curl file libgl1 libx11-6`; `uv build --out-dir /out/dist` (wheel + sdist); then `COPY packaging`, `uv sync --locked`, `packaging/build.py --appimage` and copy `OpenCoord-*.tar.gz` + `OpenCoord-*.AppImage` to `/out/dist` (needs network for appimagetool + runtime) |
 | `artifacts` | `FROM scratch`, copies `/out/dist/` to `/`. `docker build --target artifacts --output dist/ .` |
 | `runtime` (last = default) | uv base + mesa/X11 apt libs; venv `/opt/venv` with the built wheel (bind-mounted from `build`), `ENTRYPOINT ["opencoord"]`; `opencoord-cli` is reachable with `--entrypoint` |
 
@@ -71,24 +74,65 @@ GUI run command (README, best-effort): `docker run --rm --device /dev/ttyUSB0 -e
 (`xhost +local:` may be needed). `.dockerignore` excludes `.git`, `.github`, `.superpowers`, `.claude`, `plans`, `.venv`,
 `result`, `dist`, `build`, caches, and the flake files.
 
-## PyInstaller & OS packaging
-- One spec: `packaging/opencoord.spec` (onedir; datas: channel plans, profile templates, icons). On macOS it adds a
-  `BUNDLE` → `OpenCoord.app`.
-- Windows: `packaging/windows/opencoord.iss` (Inno Setup) → `OpenCoord-<ver>-win64-setup.exe` plus a portable zip.
-  Adds a `.opencoord` file association.
-- macOS: `hdiutil create` → DMG; ad-hoc `codesign -s -`; notarisation only if secrets are present.
-- Linux: AppDir (`.desktop`, icon, AppStream XML) → `appimagetool`. Built on ubuntu-22.04 for an old glibc baseline.
-  Ships `packaging/linux/99-opencoord-rfexplorer.rules`.
-- Icons: `packaging/icons/opencoord.svg` → script generates `.ico`, `.icns`, PNGs.
+## PyInstaller & OS packaging (implemented)
+Single entrypoint: `uv run python packaging/build.py [--appimage|--installer|--dmg]` (after `uv sync`; PyInstaller
+is in the dev group). It reads the version from `pyproject.toml` (tomllib), runs PyInstaller with the spec
+(`--distpath dist/pyinstaller --workpath build/pyinstaller --clean`), then the OS step, and prints artifact paths.
+The flag must match the host OS. Artifacts land directly in `dist/`:
+
+| OS | Flag | Artifacts |
+|---|---|---|
+| Linux | `--appimage` | `OpenCoord-<ver>-<arch>.AppImage`, `OpenCoord-<ver>-linux-<arch>.tar.gz` (top dir `OpenCoord/` = onedir + udev rule + `.desktop` + png) |
+| Windows | `--installer` | `OpenCoord-<ver>-win64-setup.exe`, `OpenCoord-<ver>-win64-portable.zip` |
+| macOS | `--dmg` | `OpenCoord-<ver>-macos-arm64.dmg` (`OpenCoord.app` + `/Applications` symlink) |
+
+`<arch>` is `platform.machine()` normalised (`AMD64`→`x86_64`, `arm64`→`aarch64`).
+
+- **Spec** `packaging/opencoord.spec`: onedir, name `OpenCoord`, entry `src/opencoord/__main__.py`
+  (`pathex=src`). `copy_metadata("opencoord")` so `importlib.metadata.version` (hence `__version__` /
+  `--version`) works frozen; datas `collect_data_files("opencoord", includes=["**/*.toml"])`; hidden imports
+  `collect_submodules("dearpygui")` + `("opencoord")`; binaries `collect_dynamic_libs("dearpygui")` (empty on
+  Linux, `_dearpygui` is an extension module found by import analysis). `console=False` on Windows/macOS (windowed:
+  `--version` prints nothing on Windows), `True` on Linux. Icon `.ico` (Windows) / `.icns` (macOS).
+  macOS `BUNDLE` → `OpenCoord.app`, bundle id `io.github.waayway.opencoord`, numeric plist version (`0.1.0.dev0` →
+  `0.1.0`), `CFBundleDocumentTypes` for `.opencoord`.
+- **Linux host libs are not bundled** (spec filters `a.binaries`): `libstdc++`, `libgcc_s`, `libX11*`, `libXau`,
+  `libXdmcp`, `libxcb*`, `libGL*`. A bundled libstdc++ from the older build distro (bookworm / ubuntu-22.04) breaks
+  the host's Mesa drivers: `GLX: No GLXFBConfigs returned` then a glfw assertion crash. The bundle keeps only
+  `libpython`, dearpygui and stdlib extension deps.
+- **AppImage** `packaging/linux/make-appimage.sh <onedir> <version> <outdir>`: AppDir in `build/appimage/` with
+  onedir at `usr/lib/opencoord/`, `AppRun` (sh, execs `usr/lib/opencoord/OpenCoord "$@"`), desktop file copied as
+  `io.github.waayway.opencoord.desktop` (top level + `usr/share/applications/`; id must match the AppStream
+  `<launchable>`), `packaging/linux/io.github.waayway.opencoord.metainfo.xml` installed as
+  `usr/share/metainfo/io.github.waayway.opencoord.appdata.xml` (appimagetool only looks for the legacy `.appdata.xml`
+  name and validates it with `appstreamcli` when present), 256px icon (`opencoord.png`, `.DirIcon`, hicolor), udev
+  rule under `usr/lib/udev/rules.d/` (informational; README says how to install it). Downloads
+  `appimagetool-<arch>.AppImage` from the `continuous` release (cached in `build/appimage/`; needs `curl`, `file`) and
+  runs it with `--appimage-extract-and-run`, `ARCH=<arch>`. appimagetool downloads the type2 runtime too, so the build
+  needs network. Run the result without FUSE via `APPIMAGE_EXTRACT_AND_RUN=1` or `--appimage-extract-and-run`.
+- **Windows** `packaging/windows/opencoord.iss` (Inno Setup 6, `ArchitecturesAllowed=x64compatible`): defines
+  `AppVersion` (required), `BundleDir`, `OutputDir` via `/D…`; installs to `{autopf}\OpenCoord` (admin), Start-menu
+  shortcut + CP210x driver `.url` shortcut, optional desktop shortcut (unchecked task), uninstaller, `.opencoord` →
+  `OpenCoord.Session` ProgID (`HKA`, `"…\OpenCoord.exe" "%1"`, `ChangesAssociations=yes`). Fixed `AppId` GUID —
+  never change it. `build.py` finds `ISCC.exe` on PATH or in `Program Files (x86)\Inno Setup 6|7`.
+- **macOS** `packaging/macos/make-dmg.sh <app> <dmg>`: `codesign --force --deep -s -` + `--verify`, staging dir with
+  the app and an `/Applications` symlink, `hdiutil create -format UDZO -fs HFS+`. Not notarised (Gatekeeper asks on
+  first launch).
+- `opencoord <session>`: `ui/app.py` accepts an optional positional `session` path (`Path`) so file-association
+  launches parse; opening it is not implemented yet.
+- **Icons** `packaging/icons/`: source `opencoord.svg` (spectrum with three peaks). `uv run packaging/icons/generate.py`
+  (PEP 723 inline deps `pillow`, `resvg-py`; not project deps) writes `opencoord-{16..512}.png`, `opencoord.png`
+  (256), `opencoord.ico` (16–256), `opencoord.icns` (from 1024). Outputs are committed; rerun after editing the SVG.
+- Built on ubuntu-22.04 runners (glibc 2.35) for an old baseline; the Docker build stage uses bookworm (glibc 2.36).
 - Version: single source in `pyproject.toml`, read at runtime via `importlib.metadata`. Release tags are `vX.Y.Z`.
 
 ## GitHub Actions (`.github/workflows/`)
 | Workflow | What it runs |
 |---|---|
 | `ci.yml` | on push/PR, cancel-in-progress per ref. Jobs: `lint` (ruff check, ruff format --check, mypy); `test` (ubuntu/windows/macos x py 3.11-3.14, `uv sync --locked --python X` + `uv run --python X pytest -m "not ui and not hardware"`, overrides `.python-version`); `ui-smoke` (apt xvfb + mesa/X11 libs, `xvfb-run -a uv run pytest -m ui`). Actions: checkout@v4, setup-uv@v5 (cache on) |
-| `build.yml` | builds per OS: ubuntu-22.04 (+ `-arm`), windows-latest, macos-14 (+ Intel if available); uploads artifacts |
+| `build.yml` | PR, `workflow_dispatch`, tags `v*`; cancel-in-progress per ref; matrix `ubuntu-22.04` / `ubuntu-22.04-arm` / `windows-latest` / `macos-14`: `uv sync --locked`, `packaging/build.py --appimage|--installer|--dmg`, smoke `--smoke-frames 5` (Linux: apt xvfb + mesa, onedir and AppImage under `xvfb-run -a` with `APPIMAGE_EXTRACT_AND_RUN=1`; Windows: `choco install innosetup` if missing, `Start-Process -Wait -PassThru` on the onedir exe, then silent install `/VERYSILENT` and smoke the installed exe; macOS: `OpenCoord.app/Contents/MacOS/OpenCoord`). Uploads `opencoord-linux-x86_64`, `opencoord-linux-aarch64`, `opencoord-windows-x86_64`, `opencoord-macos-arm64`. No Intel macOS job |
 | `nix.yml` | on push/PR, cancel-in-progress per ref; ubuntu-latest + macos-latest: DeterminateSystems `nix-installer-action` + `magic-nix-cache-action`, `nix flake check -L`, `nix build -L`, `./result/bin/opencoord --version` |
-| `docker.yml` | push/PR/tags `v*`: buildx + build-push-action (GHA cache, per-target scopes): `test` target, `runtime` target (loaded, `--version` check), `artifacts` target (`outputs: type=local,dest=dist`, uploaded as `docker-dist`); on `v*` tags also login + metadata + push runtime to `ghcr.io/waayway/opencoord` (`packages: write`) |
+| `docker.yml` | push/PR/tags `v*`: buildx + build-push-action (GHA cache, per-target scopes): `test` target, `runtime` target (loaded, `--version` check), `artifacts` target (`outputs: type=local,dest=dist`: wheel, sdist, Linux tar.gz + AppImage; uploaded as `docker-dist`); on `v*` tags also login + metadata + push runtime to `ghcr.io/waayway/opencoord` (`packages: write`) |
 | `release.yml` | on `v*` tag: collect all artifacts + `SHA256SUMS` into a GitHub Release; optional PyPI trusted publishing |
 
 Rule: every shipped artifact must be reproducible from a clean GitHub runner. No manual release steps.

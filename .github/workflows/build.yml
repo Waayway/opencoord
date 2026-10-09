@@ -1,0 +1,105 @@
+name: Build
+
+on:
+  pull_request:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+
+concurrency:
+  group: build-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: build (${{ matrix.artifact }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            artifact: opencoord-linux-x86_64
+          - os: ubuntu-22.04-arm
+            artifact: opencoord-linux-aarch64
+          - os: windows-latest
+            artifact: opencoord-windows-x86_64
+          - os: macos-14
+            artifact: opencoord-macos-arm64
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - run: uv sync --locked
+
+      # Linux: AppImage + tar.gz, smoke-tested under Xvfb with Mesa software GL.
+      - name: Install X virtual framebuffer and OpenGL libraries
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            xvfb file libgl1 libglx-mesa0 libgl1-mesa-dri libglu1-mesa libegl1 \
+            libx11-6 libxrandr2 libxinerama1 libxcursor1 libxi6 libxkbcommon0
+      - name: Build AppImage and tarball
+        if: runner.os == 'Linux'
+        run: uv run python packaging/build.py --appimage
+      - name: Smoke test (onedir and AppImage)
+        if: runner.os == 'Linux'
+        env:
+          APPIMAGE_EXTRACT_AND_RUN: "1"
+        run: |
+          xvfb-run -a dist/pyinstaller/OpenCoord/OpenCoord --smoke-frames 5
+          dist/OpenCoord-*.AppImage --version
+          xvfb-run -a dist/OpenCoord-*.AppImage --smoke-frames 5
+
+      # Windows: Inno Setup installer + portable zip.
+      - name: Install Inno Setup
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $iscc = Get-Command iscc -ErrorAction SilentlyContinue
+          if (-not $iscc -and -not (Test-Path "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe")) {
+            choco install innosetup -y --no-progress
+          }
+      - name: Build installer and zip
+        if: runner.os == 'Windows'
+        run: uv run python packaging/build.py --installer
+      - name: Smoke test (onedir, then silent install)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          # OpenCoord.exe is a GUI-subsystem app: wait for it explicitly to get its exit code.
+          function Invoke-Smoke([string]$exe) {
+            Write-Host "smoke: $exe"
+            $p = Start-Process -FilePath $exe -ArgumentList '--smoke-frames', '5' -Wait -PassThru
+            if ($p.ExitCode -ne 0) { throw "$exe exited with $($p.ExitCode)" }
+          }
+          Invoke-Smoke "dist\pyinstaller\OpenCoord\OpenCoord.exe"
+          $setup = Get-ChildItem dist\OpenCoord-*-win64-setup.exe | Select-Object -First 1
+          $p = Start-Process -FilePath $setup.FullName -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART' -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "installer exited with $($p.ExitCode)" }
+          Invoke-Smoke "${env:ProgramFiles}\OpenCoord\OpenCoord.exe"
+
+      # macOS: OpenCoord.app in an ad-hoc signed DMG.
+      - name: Build DMG
+        if: runner.os == 'macOS'
+        run: uv run python packaging/build.py --dmg
+      - name: Smoke test (app bundle)
+        if: runner.os == 'macOS'
+        run: dist/pyinstaller/OpenCoord.app/Contents/MacOS/OpenCoord --smoke-frames 5
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: |
+            dist/OpenCoord-*.AppImage
+            dist/OpenCoord-*.tar.gz
+            dist/OpenCoord-*.zip
+            dist/OpenCoord-*.exe
+            dist/OpenCoord-*.dmg
+          if-no-files-found: error

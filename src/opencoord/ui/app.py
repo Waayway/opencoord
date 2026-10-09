@@ -3,12 +3,20 @@
 import argparse
 import sys
 from collections.abc import Sequence
+from pathlib import Path
 
 from opencoord import __version__
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="opencoord", description="OpenCoord spectrum scanner")
+    parser.add_argument(
+        "session",
+        nargs="?",
+        type=Path,
+        default=None,
+        help="session file (.opencoord) to open (not implemented yet)",
+    )
     parser.add_argument("--version", action="version", version=f"opencoord {__version__}")
     parser.add_argument(
         "--simulator", action="store_true", help="use the simulated device (no-op for now)"

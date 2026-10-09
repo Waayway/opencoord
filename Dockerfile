@@ -21,13 +21,23 @@ RUN uv run --no-sync ruff check \
 RUN uv run --no-sync pytest -m "not ui and not hardware"
 
 FROM ${UV_IMAGE} AS build
+# binutils: PyInstaller's binary analysis (objdump); curl + file: appimagetool download/run;
+# X11/GL libs: so dearpygui imports during PyInstaller's hook analysis.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends \
+      binutils ca-certificates curl file libgl1 libx11-6 \
+ && rm -rf /var/lib/apt/lists/*
 WORKDIR /src
 ENV UV_LINK_MODE=copy \
     UV_PYTHON_DOWNLOADS=never
 COPY pyproject.toml uv.lock README.md LICENSE ./
 COPY src ./src
 RUN uv build --out-dir /out/dist
-# TODO(Task 5): add the PyInstaller onedir bundle and AppImage here; write the results to /out/dist.
+# Linux native bundle: PyInstaller onedir (.tar.gz) + AppImage (appimagetool --appimage-extract-and-run, no FUSE).
+COPY packaging ./packaging
+RUN uv sync --locked \
+ && uv run --no-sync python packaging/build.py --appimage \
+ && cp dist/OpenCoord-*.tar.gz dist/OpenCoord-*.AppImage /out/dist/
 
 FROM scratch AS artifacts
 COPY --from=build /out/dist/ /

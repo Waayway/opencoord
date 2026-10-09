@@ -46,7 +46,7 @@ jobs:
       - name: Runtime image reports its version
         run: docker run --rm opencoord:ci --version
 
-      - name: Extract build artifacts (wheel, sdist)
+      - name: Extract build artifacts (wheel, sdist, Linux tar.gz + AppImage)
         uses: docker/build-push-action@v6
         with:
           context: .
