@@ -67,4 +67,10 @@ Pure data:
 - band annotations (`pmse = "allowed" | "forbidden" | "info"`, note)
 
 `eu.toml` holds the DVB-T channels 21–48, plus annotations for 694–790, 823–832, 863–865 and 1785–1805.
-The app annotates and warns; it never blocks.
+The solver skips `forbidden` bands unless `CoordinationRequest.allow_forbidden=True`. Plans that use them carry
+`Plan.warnings`, which every exporter must print. The app never hard-blocks.
+
+## Groups/banks
+A profile may define `[[groups]]` (`name`, `channels`) instead of a flat `channels` list. When the
+`prefer_single_group` option is on (the default), the solver tries to keep all devices of a profile in one group
+before falling back to mixing groups.

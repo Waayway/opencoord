@@ -127,6 +127,7 @@ against the spec and recorded fixtures before relying on them.**
 | Area | Features |
 |---|---|
 | Tuning | start/stop, center/span, presets, custom presets saved by user, step/RBW readout |
+| Resolution (Q7) | scan-resolution presets **Fast / Normal / Fine** (segment size + sweeps per segment); estimated scan time shown before starting; aim for a Normal 470–960 MHz scan in about 60 s, with the final defaults tuned on real hardware in Phase 3 |
 | Presets | Full UHF 470–960, TV 21–48 (470–694), 694–790, 823–832, 863–865, 1785–1805 *(only on models that reach it)*, ISM 433 / 868, VHF 174–216, Overview (device full range) |
 | Traces | live, max-hold, average (N sweeps), min-hold; toggle visibility; reset; up to 4 **reference traces** (freeze / load a previous scan to compare) |
 | Markers | click-to-place, peak search, next peak left/right, delta marker, marker table with freq/level, up to 8 markers |
@@ -157,6 +158,9 @@ channels = []                # optional fixed channel list (MHz); overrides tuni
 spacing = "generic-analog"   # preset name, or an inline [spacing] table
 ```
 
+- **Groups/banks (decided, Q6):** a fixed channel list can be flat, or grouped into banks, e.g.
+  `[[groups]] name = "A" channels = [...]`. When groups are present, the solver can prefer putting all devices of
+  one profile in a **single group**, which is what cheap sets need. This is a toggle, on by default.
 - **Editor workflow:** "New profile" → pick a **template** (Generic analog mic, Generic IEM, Generic digital,
   Fixed-channel cheap set) → type tuning range(s) and step **or paste a channel list** → save.
   You can also clone or export/import profiles as files, which makes them easy to share.
@@ -226,8 +230,15 @@ image, and save it into the session.
 - 1785–1805 MHz, marked as informational
 
 Plans are pure data (name, raster, channel number ↔ freq, band annotations with a "legal for PMSE" flag), so US/UK/etc.
-are additional files. **NL legality details are to be confirmed by the user** (see open questions); the app only
-*annotates* and never enforces.
+are additional files.
+
+**Legality handling (decided, Q3):**
+- Bands are coloured on the spectrum as allowed / forbidden / info.
+- The solver **skips "forbidden" bands by default**. A per-run "allow forbidden bands" toggle lets you opt in, and
+  any plan that uses them carries a visible warning in the UI and in every export.
+- The app never hard-blocks.
+- Band annotations in `eu.toml` are best-effort and should be checked against the current Agentschap Telecom /
+  RDI rules before v0.1.
 
 ---
 
@@ -396,34 +407,31 @@ wireless receivers (Shure/Sennheiser network protocols), mobile apps, manufactur
 
 ---
 
-## 11. Open questions
+## 11. Decisions log & deferred questions
 
-1. ~~**Spacing defaults**~~: **Resolved:** fully configurable (editable presets + per-profile + per-run overrides,
-   §5.1). The seeded values are starting points only.
-2. ~~**IMD orders**~~: **Resolved:** 3rd (2Tx + 3Tx), 5th and 7th on by default, all configurable (§5.2).
-3. **NL / EU band legality:**
-   - Which bands do you actually use?
-   - Should 694–790 MHz and 1785–1805 MHz be annotated as allowed or forbidden for your use?
-   - Should the app warn when a plan lands in a non-PMSE band?
-4. **WWB / WSM import formats:** do you have WWB and/or Sennheiser WSM installed, to verify the exact CSV formats
-   they import? Which one matters more?
-5. **Typical show size:** how many channels do you usually coordinate (10? 40?) This sets the solver's performance
-   target.
-6. **Fixed-channel devices:** do many of your amateur sets only offer a fixed channel list (groups/banks)? Should
-   OpenCoord model groups/banks explicitly, or is a flat channel list enough?
-7. **Scan resolution vs. time:** how long is acceptable for a full 470–960 MHz hi-res scan at a venue (30 s?
-   2 min?)? This picks the default segment size.
-8. **macOS signing:** do you have an Apple Developer ID for signing and notarisation? Without one, the DMG is
-   ad-hoc signed and users must right-click → Open the first time. Is an Intel-Mac build needed, or is arm64 enough?
-9. **Other hardware:** do you have (or can you borrow) other RF Explorer models to test "all models" support? If
-   not, non-WSUB1G+ models will be fixture/spec-tested only, and labelled "community-tested" in the README.
-10. **Repo visibility & ownership:** create `Waayway/opencoord` as **public** immediately, or private until v0.1?
-    Should a GitHub org be created instead?
-11. **PyPI:** publish to PyPI (`pip install opencoord`) at v0.1, or only GitHub release binaries?
-12. **Existing data:** do you have old scans (RF Explorer for Windows CSVs, WWB scans) we should support importing
-    and use as test fixtures?
-13. **Windows signing:** without code signing, SmartScreen will warn. Is that acceptable for v0.1, or should we look
-    at a signing certificate (e.g. SignPath's free OSS programme)?
-14. **Linux formats:** are AppImage + Nix + Docker enough, or do you also want Flatpak (Flathub) or `.deb`/`.rpm`?
-15. **Docker GUI usage:** is the Docker image mainly for *building* artifacts, or do you really want to *run* the GUI
-    from Docker (X11 + serial passthrough, best-effort)?
+### Decided
+| # | Topic | Decision |
+|---|---|---|
+| 1 | Spacing values | Fully configurable: editable presets + per-profile + per-run overrides (§5.1) |
+| 2 | IMD orders | 3rd (2Tx, 3Tx) + 5th + 7th on by default, all configurable (§5.2) |
+| 3 | Band legality | Annotate + warn; solver skips forbidden bands unless opted in; never hard-block (§6) |
+| 5 | Show size | Target 16 devices in under 5 s, 40 devices within the time budget (§5.2) |
+| 6 | Fixed-channel devices | Optional groups/banks in profiles, "keep a profile in one group" preference (§5.1) |
+| 9 | Other RF Explorer models | WSUB1G+ is hardware-tested; other models are spec/fixture-tested and labelled "community-tested" in the README until someone verifies them |
+| 10 | Repo | `Waayway/opencoord`, **public** from the start |
+| 13 | Language | English only (§8.8) |
+| 15 | Docker | Primarily for **building** (test/build/artifacts stages); the GUI runtime image is best-effort and documented as such |
+
+### Deferred until the app is built
+Each item is decided at the phase where it can be judged with a working build:
+
+| # | Question | Decide in | Default until then |
+|---|---|---|---|
+| 4 | Exact WWB / Sennheiser WSM CSV import formats | Phase 6 (verify by importing real exports) | Implement both from public format notes; keep the generic `MHz,dBm` CSV |
+| 7 | Final scan resolution / time defaults | Phase 3 (measure on WSUB1G+) | Normal preset targets about 60 s for 470–960 MHz |
+| 8 | macOS signing / notarisation; Intel-Mac build | Phase 9 | Ad-hoc signed arm64 DMG; Intel only if a GitHub runner is available |
+| 11 | Publish to PyPI | Phase 9 | GitHub Releases only; the `uv build` wheel is attached to the release |
+| 12 | Importing existing scans as fixtures | Phase 6 | Generic CSV + RF Explorer for Windows CSV importers; add user files as fixtures when provided |
+| 14 | Windows code signing (SmartScreen) | Phase 9 | Unsigned v0.1 with a README note; consider SignPath OSS later |
+| 16 | Extra Linux formats (Flatpak, .deb/.rpm) | Phase 9 | AppImage + tar.gz + Nix + Docker |
+| 17 | Per-OS build details (installer UX, file associations, udev install flow) | Phase 0 skeleton, finalised in Phase 9 | As described in §8.2 |
