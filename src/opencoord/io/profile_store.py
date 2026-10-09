@@ -48,6 +48,11 @@ def _slug(name: str) -> str:
     return slug or "unnamed"
 
 
+def file_stem(name: str) -> str:
+    """The file stem the store would use for ``name`` (for suggesting export file names)."""
+    return _slug(name)
+
+
 def _internal_name(path: Path, kind: Literal["preset", "profile"]) -> str | None:
     """The name stored inside a file, or ``None`` if unreadable."""
     try:
