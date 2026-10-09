@@ -5,15 +5,12 @@ from __future__ import annotations
 import dearpygui.dearpygui as dpg
 
 from opencoord.coord import channel_plans
+from opencoord.core.analysis import MAX_CARRIER_ROWS, Analysis, CarrierRow
+from opencoord.core.occupancy import PARTIAL_COVERAGE, ChannelOccupancy
 from opencoord.core.settings import AMP_OFFSET_LIMIT_DB
+from opencoord.core.zones import MAX_EXCLUSION_ZONES
 from opencoord.ui import theme
-from opencoord.ui.controller import (
-    MAX_CARRIER_ROWS,
-    MAX_EXCLUSION_ZONES,
-    Analysis,
-    CarrierRow,
-    Controller,
-)
+from opencoord.ui.controller import Controller
 from opencoord.ui.overlay import MAX_CHANNELS
 from opencoord.ui.state import AppState
 
@@ -32,6 +29,13 @@ def carrier_text(row: CarrierRow) -> tuple[str, str, str]:
         f"{row.carrier.level_dbm:.1f}",
         "-" if row.channel is None else str(row.channel),
     )
+
+
+def occupancy_text(o: ChannelOccupancy) -> tuple[str, str, str, str, str]:
+    """``(ch, max, avg, % above, coverage %)`` cells; a partly covered channel shows "partial"
+    instead of a verdict."""
+    pct = "partial" if o.coverage < PARTIAL_COVERAGE else f"{o.percent_above:.0f}"
+    return (str(o.number), f"{o.max_dbm:.1f}", f"{o.avg_dbm:.1f}", pct, f"{o.coverage * 100:.0f}")
 
 
 def analysis_summary(analysis: Analysis | None) -> str:
@@ -53,6 +57,13 @@ class AnalysisPanel:
         self._ui_version = -1
         self._zone_ids: list[int | None] = [None] * MAX_EXCLUSION_ZONES
         self._carriers: list[CarrierRow | None] = [None] * MAX_CARRIER_ROWS
+        #: Text last written to each cell, so unchanged cells cost no DPG call.
+        self._text: dict[str, str] = {}
+
+    def _set(self, tag: str, text: str) -> None:
+        if self._text.get(tag) != text:
+            self._text[tag] = text
+            dpg.set_value(tag, text)
 
     @property
     def text_inputs(self) -> list[str]:
@@ -208,14 +219,17 @@ class AnalysisPanel:
             dpg.add_table_column(label="Max dBm")
             dpg.add_table_column(label="Avg dBm")
             dpg.add_table_column(label="% above")
+            dpg.add_table_column(label="Cov %")
             for i in range(MAX_CHANNELS):
                 with dpg.table_row(tag=f"analysis.occ.row.{i}", show=False):
-                    for col in ("ch", "max", "avg", "pct"):
+                    for col in ("ch", "max", "avg", "pct", "cov"):
                         dpg.add_text("", tag=f"analysis.occ.{col}.{i}")
 
     # --- per frame ---
 
     def update(self, state: AppState) -> None:
+        if not dpg.is_item_visible("analysis.summary"):
+            return  # another tab is showing: refresh when this one is (versions stay stale)
         versions = (state.ui_version, state.trace_version)
         if versions == self._versions:
             return
@@ -251,7 +265,7 @@ class AnalysisPanel:
             if not shown:
                 continue
             zone = zones[slot]
-            dpg.set_value(f"analysis.zone.id.{slot}", f"X{zone.id}")
+            self._set(f"analysis.zone.id.{slot}", f"X{zone.id}")
             for edge, hz in (("start", zone.start_hz), ("stop", zone.stop_hz)):
                 tag = f"analysis.zone.{edge}.{slot}"
                 if not dpg.is_item_active(tag):
@@ -259,7 +273,7 @@ class AnalysisPanel:
         dpg.configure_item("analysis.zone.add", enabled=len(zones) < MAX_EXCLUSION_ZONES)
 
     def _update_tables(self, analysis: Analysis | None) -> None:
-        dpg.set_value("analysis.summary", analysis_summary(analysis))
+        self._set("analysis.summary", analysis_summary(analysis))
         rows = analysis.carriers if analysis else ()
         for slot in range(MAX_CARRIER_ROWS):
             shown = slot < len(rows)
@@ -267,19 +281,17 @@ class AnalysisPanel:
             self._carriers[slot] = rows[slot] if shown else None
             if shown:
                 freq, level, channel = carrier_text(rows[slot])
-                dpg.set_value(f"analysis.carrier.freq.{slot}", freq)
-                dpg.set_value(f"analysis.carrier.level.{slot}", level)
-                dpg.set_value(f"analysis.carrier.channel.{slot}", channel)
+                self._set(f"analysis.carrier.freq.{slot}", freq)
+                self._set(f"analysis.carrier.level.{slot}", level)
+                self._set(f"analysis.carrier.channel.{slot}", channel)
         occupancy = analysis.occupancy if analysis else ()
         for i in range(MAX_CHANNELS):
             shown = i < len(occupancy)
             dpg.configure_item(f"analysis.occ.row.{i}", show=shown)
             if shown:
-                o = occupancy[i]
-                dpg.set_value(f"analysis.occ.ch.{i}", str(o.number))
-                dpg.set_value(f"analysis.occ.max.{i}", f"{o.max_dbm:.1f}")
-                dpg.set_value(f"analysis.occ.avg.{i}", f"{o.avg_dbm:.1f}")
-                dpg.set_value(f"analysis.occ.pct.{i}", f"{o.percent_above:.0f}")
+                cells = occupancy_text(occupancy[i])
+                for col, text in zip(("ch", "max", "avg", "pct", "cov"), cells, strict=True):
+                    self._set(f"analysis.occ.{col}.{i}", text)
 
 
-__all__ = ["AnalysisPanel", "analysis_summary", "carrier_text"]
+__all__ = ["AnalysisPanel", "analysis_summary", "carrier_text", "occupancy_text"]

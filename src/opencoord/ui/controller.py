@@ -29,14 +29,16 @@ from collections.abc import Callable
 from dataclasses import dataclass, replace
 from typing import Final
 
-import numpy as np
-import numpy.typing as npt
-
 from opencoord.coord import channel_plans
 from opencoord.core import markers as marker_math
 from opencoord.core import presets
+from opencoord.core import zones as zones_mod
+from opencoord.core.analysis import (
+    Analysis,
+    analyze,
+)
 from opencoord.core.markers import MAX_MARKERS, Direction, Marker
-from opencoord.core.occupancy import ChannelOccupancy, channel_occupancy
+from opencoord.core.offsets import offset_key, offset_sweep, offset_trace
 from opencoord.core.presets import RangePreset
 from opencoord.core.settings import (
     AMP_OFFSET_LIMIT_DB,
@@ -44,8 +46,8 @@ from opencoord.core.settings import (
     WATERFALL_DEPTH_MIN,
     AppSettings,
 )
-from opencoord.core.traces import auto_scale_limits, detected_carriers, noise_floor
-from opencoord.core.types import Carrier, DeviceConfig, ExclusionZone, Sweep, Trace
+from opencoord.core.traces import auto_scale_limits
+from opencoord.core.types import DeviceConfig, Sweep, Trace
 from opencoord.device.link import SerialPort, find_ports
 from opencoord.device.link_api import Link
 from opencoord.device.scanner import Resolution, SegmentedScanner
@@ -61,12 +63,6 @@ _MHZ = 1_000_000
 MAX_REFERENCES: Final = 4
 #: Trace a marker reads when its own trace is missing, in order of preference.
 _MARKER_FALLBACK: Final = ("max", "scan", "live")
-#: Exclusion zones that can exist at once (the panel shows one row per zone).
-MAX_EXCLUSION_ZONES: Final = 16
-#: Carrier threshold above the noise floor (dB) when the threshold line is not shown.
-DEFAULT_CARRIER_THRESHOLD_DB: Final = 10.0
-#: The detected-carrier list keeps the strongest this many carriers.
-MAX_CARRIER_ROWS: Final = 32
 DEFAULT_CHANNEL_PLAN: Final = "eu"
 #: Padding (dB) around the data for auto-scale.
 AUTO_SCALE_PADDING_DB: Final = 5.0
@@ -100,33 +96,6 @@ class MarkerRow:
     level_dbm: float | None
     #: ``(df_hz, ddb)`` versus the delta reference marker; ``None`` without (or for) the reference.
     delta: tuple[int, float] | None
-
-
-@dataclass(frozen=True)
-class CarrierRow:
-    """A detected carrier and the plan channel it falls in (``None`` outside the plan)."""
-
-    carrier: Carrier
-    channel: int | None
-
-
-@dataclass(frozen=True, eq=False)
-class Analysis:
-    """Noise floor, detected carriers and channel occupancy of the main trace.
-
-    ``carriers`` are sorted by frequency (the strongest ``MAX_CARRIER_ROWS`` when there are more);
-    ``occupancy`` is empty without a channel plan. ``key`` identifies the inputs.
-    """
-
-    key: tuple[object, ...]
-    trace_label: str
-    floor_dbm: float
-    #: dB above the floor a carrier / occupied bin must reach.
-    threshold_db: float
-    #: ``threshold_db`` comes from the threshold line (else the default floor + 10 dB).
-    from_threshold_line: bool
-    carriers: tuple[CarrierRow, ...]
-    occupancy: tuple[ChannelOccupancy, ...]
 
 
 _Result = _Opened | _OpenFailed | _Closed
@@ -170,7 +139,7 @@ class Controller:
         self._connected_port: str | None = None
         self._rate_count = 0
         self._rate_since = clock()
-        self._analysis: Analysis | None = None
+        self._analysis: tuple[tuple[object, ...], Analysis | None] | None = None
         #: The scanner's partial trace as received (``state.scan_partial`` has the offset applied).
         self._partial_raw: Trace | None = None
 
@@ -436,47 +405,33 @@ class Controller:
         self.state.channel_plan = plan
         self._changed()
 
-    def _zone(self, zone_id: int) -> ExclusionZone | None:
-        return next((z for z in self.state.exclusion_zones if z.id == zone_id), None)
-
-    def _valid_zone(self, start_hz: float, stop_hz: float) -> tuple[int, int] | None:
-        """``(start, stop)`` in Hz, ordered, or ``None`` (with a message) for an unusable range."""
-        lo, hi = sorted((round(start_hz), round(stop_hz)))
-        if lo < 0 or hi <= lo:
-            self._say("An exclusion zone needs a start below its stop")
-            return None
-        return lo, hi
-
     def add_exclusion_zone(self, start_hz: float, stop_hz: float) -> int | None:
         """Add a zone (start and stop may be given in either order); returns its id."""
-        st = self.state
-        if len(st.exclusion_zones) >= MAX_EXCLUSION_ZONES:
-            self._say(f"At most {MAX_EXCLUSION_ZONES} exclusion zones; remove one first")
+        try:
+            zones, zone_id = zones_mod.add_zone(self.state.exclusion_zones, start_hz, stop_hz)
+        except ValueError as exc:
+            self._say(str(exc))
             return None
-        span = self._valid_zone(start_hz, stop_hz)
-        if span is None:
-            return None
-        zone_id = next(i for i in range(1, MAX_EXCLUSION_ZONES + 1) if self._zone(i) is None)
-        zones = [*st.exclusion_zones, ExclusionZone(zone_id, *span)]
-        st.exclusion_zones = sorted(zones, key=_zone_id)
+        self.state.exclusion_zones = zones
         self._changed()
         return zone_id
 
     def update_exclusion_zone(self, zone_id: int, start_hz: float, stop_hz: float) -> None:
-        zone = self._zone(zone_id)
-        span = self._valid_zone(start_hz, stop_hz)
-        if zone is None or span is None:
+        if all(z.id != zone_id for z in self.state.exclusion_zones):
             return
-        st = self.state
-        st.exclusion_zones = [
-            ExclusionZone(zone_id, *span) if z.id == zone_id else z for z in st.exclusion_zones
-        ]
+        try:
+            self.state.exclusion_zones = zones_mod.update_zone(
+                self.state.exclusion_zones, zone_id, start_hz, stop_hz
+            )
+        except ValueError as exc:
+            self._say(str(exc))
+            return
         self._changed()
 
     def remove_exclusion_zone(self, zone_id: int) -> None:
         st = self.state
-        if self._zone(zone_id) is not None:
-            st.exclusion_zones = [z for z in st.exclusion_zones if z.id != zone_id]
+        if any(z.id == zone_id for z in st.exclusion_zones):
+            st.exclusion_zones = zones_mod.remove_zone(st.exclusion_zones, zone_id)
             self._changed()
 
     def clear_exclusion_zones(self) -> None:
@@ -486,42 +441,21 @@ class Controller:
     def analysis(self) -> Analysis | None:
         """Floor, carriers and channel occupancy of the main trace (max hold, else scan, else live).
 
-        The threshold is the threshold line when shown, else the floor plus 10 dB. The result is
-        cached until the traces, the threshold or the plan change, so calling it every frame is
-        cheap; ``None`` without data.
+        The threshold is the threshold line when shown, else the floor plus 10 dB. Only the cache
+        lives here (:func:`opencoord.core.analysis.analyze` does the work): the result is reused
+        until the traces, the threshold or the plan change, so calling it every frame is cheap;
+        ``None`` without data.
         """
         st = self.state
         resolved = self.resolve_trace("max")
-        if resolved is None or len(resolved[1].dbm) == 0:
+        if resolved is None:
             return None
         trace_key, trace = resolved
         plan = st.channel_plan
         key = (st.trace_version, trace_key, st.threshold_dbm, plan.name if plan else None)
-        if self._analysis is not None and self._analysis.key == key:
-            return self._analysis
-        floor = noise_floor(trace.dbm)
-        threshold_db = (
-            DEFAULT_CARRIER_THRESHOLD_DB if st.threshold_dbm is None else st.threshold_dbm - floor
-        )
-        carriers = detected_carriers(trace, floor, threshold_db)
-        if len(carriers) > MAX_CARRIER_ROWS:
-            carriers = sorted(carriers, key=_level, reverse=True)[:MAX_CARRIER_ROWS]
-            carriers.sort(key=_freq)
-        rows = []
-        for carrier in carriers:
-            channel = plan.channel_at(carrier.freq_hz) if plan else None
-            rows.append(CarrierRow(carrier, channel.number if channel else None))
-        occupancy = channel_occupancy(trace, plan.channels, floor, threshold_db) if plan else []
-        self._analysis = Analysis(
-            key,
-            trace.label,
-            floor,
-            threshold_db,
-            st.threshold_dbm is not None,
-            tuple(rows),
-            tuple(occupancy),
-        )
-        return self._analysis
+        if self._analysis is None or self._analysis[0] != key:
+            self._analysis = (key, analyze(trace, plan, st.threshold_dbm))
+        return self._analysis[1]
 
     # --- amplitude offset -----------------------------------------------------------------------
 
@@ -531,13 +465,7 @@ class Controller:
         ``Link`` exposes no serial number (``SerialLink`` only knows the port), so offsets are kept
         per model code, not per unit; two units of one model share an offset.
         """
-        st = self.state
-        model = st.model
-        if model is None:
-            return None
-        expansion = st.config is not None and st.config.expansion_active
-        code = model.expansion_code if expansion and model.expansion_code is not None else None
-        return f"model_{model.main_code if code is None else code}"
+        return offset_key(self.state.model, self.state.config)
 
     @property
     def amp_offset_db(self) -> float:
@@ -550,7 +478,8 @@ class Controller:
 
         It is added to each sweep before it reaches ``TraceSet`` / the waterfall (the device's own
         offset is already inside the levels ``make_sweep`` returns and is left alone). Data recorded
-        with the old offset would be inconsistent, so the traces and the waterfall are cleared.
+        with the old offset would be inconsistent, so the traces and the waterfall are cleared;
+        frozen references and the threshold line keep their old levels.
         """
         key = self.amp_offset_key()
         if key is None:
@@ -569,20 +498,16 @@ class Controller:
         st.traces.reset()
         st.waterfall.clear()
         st.trace_version += 1
-        self._say(f"Amplitude offset {value:+.1f} dB; traces were reset")
-
-    def _offset_levels(self, dbm: npt.NDArray[np.float32]) -> npt.NDArray[np.float32]:
-        return dbm + np.float32(self.amp_offset_db)
+        self._say(
+            f"Amplitude offset {value:+.1f} dB; traces were reset "
+            "(reference traces and the threshold line keep their old levels)"
+        )
 
     def _offset_sweep(self, sweep: Sweep) -> Sweep:
-        if self.amp_offset_db == 0.0:
-            return sweep
-        return Sweep(sweep.freqs_hz, self._offset_levels(sweep.dbm), sweep.timestamp)
+        return offset_sweep(sweep, self.amp_offset_db)
 
     def _offset_trace(self, trace: Trace | None) -> Trace | None:
-        if trace is None or self.amp_offset_db == 0.0:
-            return trace
-        return Trace(trace.freqs_hz, self._offset_levels(trace.dbm), trace.label)
+        return offset_trace(trace, self.amp_offset_db)
 
     # --- expansion module -----------------------------------------------------------------------
 
@@ -1064,18 +989,6 @@ def _id(marker: Marker) -> int:
     return marker.id
 
 
-def _zone_id(zone: ExclusionZone) -> int:
-    return zone.id
-
-
-def _level(carrier: Carrier) -> float:
-    return carrier.level_dbm
-
-
-def _freq(carrier: Carrier) -> int:
-    return carrier.freq_hz
-
-
 def _drain(link: Link) -> list[Sweep]:
     out: list[Sweep] = []
     while True:
@@ -1093,13 +1006,8 @@ def _close_quietly(link: Link) -> None:
 
 
 __all__ = [
-    "DEFAULT_CARRIER_THRESHOLD_DB",
     "LIVE_CONFIRM_TIMEOUT_S",
-    "MAX_CARRIER_ROWS",
-    "MAX_EXCLUSION_ZONES",
     "MAX_REFERENCES",
-    "Analysis",
-    "CarrierRow",
     "Controller",
     "LinkFactory",
     "MarkerRow",

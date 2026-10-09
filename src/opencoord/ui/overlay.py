@@ -18,8 +18,10 @@ from __future__ import annotations
 import dearpygui.dearpygui as dpg
 
 from opencoord.coord.channel_plans import Pmse
-from opencoord.core.occupancy import ChannelOccupancy
-from opencoord.ui.controller import MAX_EXCLUSION_ZONES, Analysis, Controller
+from opencoord.core.analysis import Analysis
+from opencoord.core.occupancy import PARTIAL_COVERAGE, ChannelOccupancy
+from opencoord.core.zones import MAX_EXCLUSION_ZONES
+from opencoord.ui.controller import Controller
 from opencoord.ui.state import AppState
 from opencoord.ui.theme import RGBA
 
@@ -38,7 +40,7 @@ SPAN_COLORS: dict[Pmse, RGBA] = {
     "forbidden": (225, 60, 50, 44),
     "info": (70, 140, 230, 40),
 }
-ZONE_FILL: RGBA = (0, 0, 0, 165)
+ZONE_FILL: RGBA = (0, 0, 0, 70)
 GRID_COLOR: RGBA = (200, 200, 210, 70)
 #: Channel badge colours by occupancy.
 FREE_COLOR: RGBA = (40, 110, 90, 235)
@@ -50,9 +52,10 @@ SOME_PERCENT = 1.0
 BUSY_PERCENT = 25.0
 
 
-def occupancy_color(percent_above: float | None) -> RGBA:
-    """Badge colour of a channel: grey without data, green free, amber some, red busy."""
-    if percent_above is None:
+def occupancy_color(percent_above: float | None, coverage: float = 1.0) -> RGBA:
+    """Badge colour: grey without data or when the channel is only partly covered (no verdict),
+    else green free, amber some, red busy."""
+    if percent_above is None or coverage < PARTIAL_COVERAGE:
         return PLAIN_COLOR
     if percent_above < SOME_PERCENT:
         return FREE_COLOR
@@ -79,7 +82,10 @@ class OverlayView:
     def __init__(self, controller: Controller, x_axis: str) -> None:
         self._c = controller
         self._x_axis = x_axis
-        self._key: tuple[object, ...] | None = None
+        #: What the grid, spans and zones were drawn from; the badge colours have their own key.
+        self._static_key: tuple[object, ...] | None = None
+        self._analysis: Analysis | None = None
+        self._channels: tuple[int, ...] = ()
         self._limits: tuple[float, float] | None = None
         #: Centre (MHz) of the channel / zone shown in each annotation slot, ``None`` when unused.
         self._channel_x: list[float | None] = [None] * MAX_CHANNELS
@@ -127,43 +133,54 @@ class OverlayView:
     def update(self, state: AppState) -> None:
         analysis = self._c.analysis() if state.overlay_enabled else None
         plan = state.channel_plan
-        key = (
+        static_key = (
             state.overlay_enabled,
             plan.name if plan else None,
-            id(analysis) if analysis else None,
             tuple(state.exclusion_zones),
         )
         limits = tuple(dpg.get_axis_limits(self._x_axis))
         lo, hi = float(limits[0]), float(limits[1])
-        if key != self._key:
-            self._key = key
-            self._push(state, analysis)
+        if static_key != self._static_key:
+            self._static_key = static_key
+            self._push_static(state)
+            self._push_badges(analysis)
+            self._analysis = analysis
             self._limits = None
+        elif analysis is not self._analysis:
+            self._analysis = analysis
+            self._push_badges(analysis)
         if self._limits != (lo, hi):
             self._limits = (lo, hi)
             self._show_visible(state, lo, hi)
 
-    def _push(self, state: AppState, analysis: Analysis | None) -> None:
-        on, plan = state.overlay_enabled, state.channel_plan
+    def _push_badges(self, analysis: Analysis | None) -> None:
+        """Colour the channel numbers by occupancy (only they change with the data)."""
         occupancy: dict[int, ChannelOccupancy] = (
             {o.number: o for o in analysis.occupancy} if analysis else {}
         )
+        for i, number in enumerate(self._channels):
+            occ = occupancy.get(number)
+            dpg.configure_item(
+                channel_tag(i),
+                color=occupancy_color(
+                    occ.percent_above if occ else None, occ.coverage if occ else 1.0
+                ),
+            )
+
+    def _push_static(self, state: AppState) -> None:
+        on, plan = state.overlay_enabled, state.channel_plan
         channels = plan.channels[:MAX_CHANNELS] if on and plan else ()
+        self._channels = tuple(c.number for c in channels)
         grid: list[float] = []
         for i in range(MAX_CHANNELS):
             if i >= len(channels):
                 self._channel_x[i] = None
                 continue
             ch = channels[i]
-            occ = occupancy.get(ch.number)
             grid.extend((ch.start_hz / 1e6, ch.stop_hz / 1e6))
             self._channel_x[i] = ch.centre_hz / 1e6
             dpg.set_value(channel_tag(i), (ch.centre_hz / 1e6, _TOP_Y))
-            dpg.configure_item(
-                channel_tag(i),
-                label=str(ch.number),
-                color=occupancy_color(occ.percent_above if occ else None),
-            )
+            dpg.configure_item(channel_tag(i), label=str(ch.number))
         dpg.set_value(TAG_GRID, [sorted(set(grid))])
         dpg.configure_item(TAG_GRID, show=bool(grid))
         spans = plan.shaded_spans()[:MAX_SPANS] if on and plan else []

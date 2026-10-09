@@ -70,3 +70,25 @@ def test_empty_trace_and_returns_dataclass() -> None:
     t = _trace([-80])
     (o,) = channel_occupancy(t, [Ch(1, 100 * MHZ, 101 * MHZ)], -100.0, 10.0)
     assert isinstance(o, ChannelOccupancy)
+
+
+def test_full_channel_has_full_coverage() -> None:
+    t = _trace([-80] * 10)  # 100..109 MHz
+    (o,) = channel_occupancy(t, [Ch(1, 101 * MHZ, 105 * MHZ)], -100.0, 10.0)
+    assert o.coverage == pytest.approx(1.0)
+
+
+def test_half_covered_channel_reports_half_coverage() -> None:
+    t = _trace([-80] * 5)  # 100..104 MHz
+    (o,) = channel_occupancy(t, [Ch(1, 102 * MHZ, 106 * MHZ)], -100.0, 10.0)
+    assert o.coverage == pytest.approx(0.5)
+
+
+def test_trace_ending_on_a_channel_edge_gives_the_next_channel_zero_coverage() -> None:
+    t = _trace([-80, -80, -20])  # last bin exactly on 102 MHz
+    occ = channel_occupancy(
+        t, [Ch(1, 100 * MHZ, 102 * MHZ), Ch(2, 102 * MHZ, 104 * MHZ)], -100.0, 10.0
+    )
+    assert [o.number for o in occ] == [1, 2]
+    assert occ[0].coverage == pytest.approx(1.0)
+    assert occ[1].coverage == pytest.approx(0.0)

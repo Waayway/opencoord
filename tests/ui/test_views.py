@@ -202,18 +202,16 @@ def test_occupancy_colour_steps() -> None:
 
 
 def test_carrier_text_and_summary() -> None:
+    from opencoord.core.analysis import Analysis, CarrierRow
     from opencoord.core.types import Carrier
-    from opencoord.ui.controller import Analysis, CarrierRow
     from opencoord.ui.panels.analysis import analysis_summary, carrier_text
 
     assert carrier_text(CarrierRow(Carrier(474_500_000, -51.23), 21)) == ("474.500", "-51.2", "21")
     assert carrier_text(CarrierRow(Carrier(900_000_000, -60.0), None))[2] == "-"
     assert "No trace" in analysis_summary(None)
-    a = Analysis(("k",), "Max hold", -100.0, 10.0, False, (), ())
+    a = Analysis("Max hold", -100.0, 10.0, False, (), ())
     assert "floor + 10 dB" in analysis_summary(a)
-    assert "threshold line" in analysis_summary(
-        Analysis(("k",), "Max hold", -100.0, 5.0, True, (), ())
-    )
+    assert "threshold line" in analysis_summary(Analysis("Max hold", -100.0, 5.0, True, (), ()))
 
 
 def test_module_labels_only_with_an_expansion() -> None:
@@ -230,3 +228,16 @@ def test_module_labels_only_with_an_expansion() -> None:
     assert module_labels(st) == ("RF Explorer WSUB1G+ (active)", "RF Explorer 2.4G")
     st.capabilities = replace(caps, expansion_name="RF Explorer 2.4G", expansion=True)
     assert module_labels(st) == ("RF Explorer WSUB1G+", "RF Explorer 2.4G (active)")
+
+
+def test_partial_channels_have_no_verdict() -> None:
+    from opencoord.core.occupancy import ChannelOccupancy
+    from opencoord.ui.overlay import BUSY_COLOR, PLAIN_COLOR, occupancy_color
+    from opencoord.ui.panels.analysis import occupancy_text
+
+    assert occupancy_color(90.0, 0.4) == PLAIN_COLOR
+    assert occupancy_color(90.0, 0.5) == BUSY_COLOR
+    full = ChannelOccupancy(24, -50.0, -60.0, 12.4, 1.0)
+    assert occupancy_text(full) == ("24", "-50.0", "-60.0", "12", "100")
+    partial = ChannelOccupancy(24, -50.0, -60.0, 100.0, 0.25)
+    assert occupancy_text(partial) == ("24", "-50.0", "-60.0", "partial", "25")

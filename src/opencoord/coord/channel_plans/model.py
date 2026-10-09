@@ -125,7 +125,10 @@ def parse_plan(text: str, name: str = "") -> ChannelPlan:
     channels: list[Channel] = []
     for i, raster in enumerate(data.get("channels", [])):
         what = f"channels[{i}]"
-        first, last = _int(raster.get("first"), what + ".first"), _int(raster.get("last"), what)
+        first, last = (
+            _int(raster.get("first"), what + ".first"),
+            _int(raster.get("last"), what + ".last"),
+        )
         width = _hz(raster.get("width_mhz"), what + ".width_mhz")
         base = _hz(raster.get("centre_base_mhz"), what + ".centre_base_mhz")
         if last < first or width <= 0:

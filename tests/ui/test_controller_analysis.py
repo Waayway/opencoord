@@ -11,10 +11,11 @@ import pytest
 
 from opencoord.core.settings import AppSettings
 from opencoord.core.types import Sweep
+from opencoord.core.zones import MAX_EXCLUSION_ZONES
 from opencoord.device.link_api import Link
 from opencoord.device.models import Capabilities
 from opencoord.device.simulator import SimulatedLink
-from opencoord.ui.controller import MAX_EXCLUSION_ZONES, Controller
+from opencoord.ui.controller import Controller
 
 MHZ = 1_000_000
 
@@ -238,7 +239,8 @@ def test_amp_offset_applies_to_scans() -> None:
         ctl.set_resolution(Resolution.FAST)
         ctl.set_range(470 * MHZ, 480 * MHZ)
         ctl.set_amp_offset_db(10.0)
-        ctl.start() if ctl.state.mode == "scan" else (ctl.set_mode("scan"), ctl.start())
+        ctl.set_mode("scan")
+        ctl.start()
         run_until(ctl, lambda: not ctl.state.busy and ctl.state.traces.live is not None, 8)
         offset = ctl.state.traces.live
         assert offset is not None

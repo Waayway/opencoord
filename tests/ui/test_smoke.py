@@ -104,6 +104,7 @@ def test_live_and_scan_against_the_simulator() -> None:
         assert not dpg.get_item_configuration("spectrum.marker.0")["show"]
         # Channel overlay, exclusion zone and the analysis panel (scan view is 470-500 MHz).
         assert not dpg.get_item_configuration("overlay.channel.0")["show"]
+        dpg.set_value("tabs", "tab.analysis")  # the panel only refreshes while it is visible
         c.set_overlay_enabled(True)
         c.add_exclusion_zone(480 * MHZ, 485 * MHZ)
         for _ in range(4):

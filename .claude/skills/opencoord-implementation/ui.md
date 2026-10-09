@@ -88,15 +88,15 @@
     hidden; the panel refreshes when `ui_version` or `trace_version` changes.
 - **Channel overlay, analysis** (Task 15):
   - `ui/overlay.py` `OverlayView` (owned by `SpectrumView`, `spectrum.overlay`): all pooled, rewritten only when
-    its key (overlay on, plan name, analysis object, zones) changes. Channel edges = one `inf_line_series`
+    two keys: the static one (overlay on, plan name, zones) redraws grid, spans, zones and labels, the analysis object (compared by identity) only recolours the channel badges. Channel edges = one `inf_line_series`
     (`overlay.grid`, added before the traces); band / span shading and exclusion zones = `draw_rectangle` pools
     (`overlay.span.N` x24, `overlay.zone.N` x16) on a `draw_layer` inside the plot (plot coordinates, +/-1000 dBm
     tall so the plot clips them; they never affect the plot fit; an *outline* on such a tall rectangle renders as a
     fat bar, so there is none). Channel numbers = clamped `plot_annotation` pool (`overlay.channel.N`, x64) pinned
-    to the top (y = 1000), background colour = occupancy (`occupancy_color`: grey no data, green < 1 % of bins
+    to the top (y = 1000), background colour = occupancy (`occupancy_color`: grey for no data or a channel covered < 50 % (`PARTIAL_COVERAGE`, no verdict), green < 1 % of bins
     above the threshold, amber < 25 %, red above); zone labels `Xn` are pinned to the bottom. Clamping would pin
     off-screen annotations to the plot edge, so each frame `get_axis_limits(x)` is compared and annotations whose
-    centre is outside the view are hidden. Band colours: allowed green, forbidden red, info blue (alpha ~35-45).
+    centre is outside the view are hidden. Band colours: allowed green, forbidden red, info blue (alpha ~35-45); zone fill alpha 70.
     Zones are drawn even with the overlay off; the overlay itself starts off (`overlay_enabled` is state, not
     persisted).
   - `panels/analysis.py` `AnalysisPanel` (tab "Analysis"): overlay checkbox + plan combo (`channel_plans.available()`),
@@ -108,6 +108,10 @@
     claimed by ImPlot/the marker Ctrl+click, and a mouse gesture cannot be tested headless. State:
     `AppState.exclusion_zones` (`ExclusionZone(id, start_hz, stop_hz)`, ids 1..16, smallest free reused);
     persistence comes with the sessions (Task 16).
+  - Pure logic lives in `core/analysis.py` (`analyze(trace, plan, threshold_dbm) -> Analysis`, `CarrierRow`,
+    `MAX_CARRIER_ROWS`, `DEFAULT_CARRIER_THRESHOLD_DB`; the plan is a structural `PlanLike`), `core/zones.py`
+    (`add_zone/update_zone/remove_zone/contains`, `MAX_EXCLUSION_ZONES`; raise `ValueError` with the user message)
+    and `core/offsets.py` (`offset_key`, `offset_sweep`, `offset_trace`); the controller only delegates and caches.
   - Controller intents: `set_overlay_enabled`, `set_channel_plan(name)`, `add_exclusion_zone(start, stop)` (either
     order; `None` and a message when empty/at the limit), `update_exclusion_zone`, `remove_exclusion_zone`,
     `clear_exclusion_zones`, `analysis()` -> `Analysis(key, trace_label, floor_dbm, threshold_db,
@@ -118,7 +122,7 @@
     module>`. `Link` exposes no serial number (only `SerialLink.active_port`), so it is per model code, not per
     unit. The offset is added to each live sweep, the scan result and the scan partial before `TraceSet` / the
     waterfall (the device's own offset stays inside the levels `make_sweep` returns, untouched). Changing it clears
-    the traces and the waterfall (old data used another offset). Needs a connected device.
+    the traces and the waterfall (old data used another offset); reference traces and the threshold line keep their old levels (the message says so). Needs a connected device.
   - **Module switcher:** in the Device tab, shown only when `capabilities.expansion_name` is set: two buttons
     (main / expansion, the active one marked) calling `Controller.switch_module(main)`, which stops acquisition,
     calls `link.switch_module`, clears traces and the waterfall; `_sync_device` drops a preset the new module cannot

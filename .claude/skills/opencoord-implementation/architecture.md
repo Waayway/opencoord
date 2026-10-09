@@ -14,7 +14,10 @@ src/opencoord/
     simulator.py     SimulatedLink + pure generate(): same interface as SerialLink, synthetic spectra (done)
   core/
     types.py         Sweep, DeviceConfig, ModelInfo, Trace, Carrier, ExclusionZone (done); Band, … (planned)
-    occupancy.py     pure (done): channel_occupancy(trace, channels, floor_dbm, threshold_db) -> [ChannelOccupancy(number, max_dbm, avg_dbm (power mean), percent_above)]
+    occupancy.py     pure (done): channel_occupancy(trace, channels, floor_dbm, threshold_db) -> [ChannelOccupancy(number, max_dbm, avg_dbm (power mean), percent_above, coverage 0..1)]
+    analysis.py      pure (done): analyze(trace, plan, threshold_dbm) -> Analysis (floor, carriers with channel, occupancy)
+    zones.py         pure (done): exclusion zone list helpers (add/update/remove/contains, MAX_EXCLUSION_ZONES = 16)
+    offsets.py       pure (done): offset_key(model, config) = model_<code>, offset_sweep / offset_trace
     markers.py       Marker (frozen), level_at, peak, next_peak, delta, MAX_MARKERS = 8 (pure, done)
     traces.py        pure (done): TraceSet (live/max/avg/min; average = exact mean of last N, dB domain; axis change resets),
                      noise_floor (20th percentile), find_peaks (own O(n) prominence, strongest first), detected_carriers
@@ -36,7 +39,7 @@ src/opencoord/
 Implemented so far: `__init__.py` (`__version__`), `__main__.py`, `cli.py`,
 `ui/{app,state,controller,spectrum,overlay,waterfall,theme,shortcuts}.py`,
 `ui/panels/{device,scan,markers,analysis}.py`,
-`core/{types,traces,markers,occupancy,presets,settings}.py`, `coord/channel_plans/`,
+`core/{types,traces,markers,occupancy,analysis,zones,offsets,presets,settings}.py`, `coord/channel_plans/`,
 `device/{protocol,models,link_api,simulator,link,scanner}.py`; the rest of the tree
 is still to be written. `io/` is deliberately named like the stdlib module; all imports are absolute so it is safe.
 
