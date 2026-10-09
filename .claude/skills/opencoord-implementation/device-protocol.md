@@ -95,19 +95,30 @@ each with a `.json` sidecar):
 - `plan_segments(start, stop, span, points)` (pure): whole-kHz edges, equal spans, neighbours overlap by
   `OVERLAP_STEPS` = 2 steps (the device truncates its step), last segment shifted to end at `stop`.
 - `SegmentedScanner(link, start, stop, resolution, *, settle_timeout_s=10, clock=time.monotonic)` clamps the range to
-  the capabilities and needs an open link; `SegmentedScanner.overview(link, start, stop)` is one segment clamped to
-  `max_span_hz` at the device's current point count, one sweep.
+  the capabilities and needs an open link. If the device cannot do the preset's points (`sweep_points_max`, e.g. 112
+  on legacy models) the points are clamped and the segment narrowed to keep the bin width (`sweep_points` property).
+  `SegmentedScanner.overview(link, start, stop)` is one segment clamped to `max_span_hz` at the device's current
+  point count, one sweep; `range_hz` gives the range actually scanned.
 - `step()` never blocks: on the first call it remembers `link.config`, calls `set_sweep_points` if the preset differs
   and `set_span` for segment 0; then it drains `link.sweeps` with `get_nowait()`. A sweep counts only when
   `link.config` **and** the sweep's own axis match the requested segment (point count equal, start/stop within one
   step or 1 kHz). The first matching sweep after each retune is discarded, the next N are max-held. Each retune also
-  drops whatever was queued. No progress for `settle_timeout_s` → the segment is requested again (logged).
-- Returns `ScanProgress(segment_index, segment_count, fraction, partial, done)`; `partial` is the stitch of the
-  finished segments (fills in left to right), `result` the final `Trace(label="scan")`. `cancel()` stops early
-  (`result` stays `None`). On finish or cancel it restores the original sweep points and span (async, not waited for).
+  drops whatever was queued. No progress for `settle_timeout_s` → the segment is requested again (logged), up to
+  `MAX_RETUNES` = 3 times; then the scan is abandoned with `stalled=True` (no `result`).
+- Returns `ScanProgress(segment_index, segment_count, fraction, partial, done, stalled)`; `partial` is the stitch of
+  the finished segments (fills in left to right), `result` the final `Trace(label="scan")` (set as soon as the last
+  segment is in). `cancel()` stops early (`result` stays `None`).
+- After the last segment (or cancel/stall) `step()` restores the device in phases and only then reports `done`:
+  `set_sweep_points(original)` first (more points shrink the max span, so restoring the span earlier would be
+  clamped), then `set_span(original)` once the points are confirmed. Each phase only accepts a config object newer
+  than the one current when its command was sent (configs are replaced on every confirmation, and earlier queued
+  retunes may still be confirmed in between). Gives up after `settle_timeout_s`. Callers that close the link (the
+  CLI) must keep stepping until `done`.
 - While a scan runs it owns the link: the UI must not read `link.sweeps` itself.
-- `stitch(traces)` (pure): nearest-bin onto one grid (finest step, origin = lowest start), `np.maximum.at` in
-  overlaps, bins nothing fell into are dropped.
+- `stitch(traces)` (pure): joins segments left to right keeping every point's measured frequency; points of a later
+  segment within half a step of the joined trace's end are merged into the nearest existing point (max kept), the
+  rest appended. Output frequencies are exactly device frequencies (they feed the coordination solver); spacing is
+  only slightly irregular at segment joins. Plan edges are whole kHz, so they are not on one global step grid.
 - `opencoord-cli scan --start MHZ --stop MHZ --resolution {fast,normal,fine} [--csv FILE]` runs it to completion,
   writes `MHz,dBm` rows and a summary line (points, bin width, segments, time, estimate) on stderr.
 
@@ -115,11 +126,13 @@ each with a `.json` sidecar):
 - Implemented in `src/opencoord/device/simulator.py`; the shared interface is the `Link` Protocol in
   `device/link_api.py` (`open/close/set_span/set_sweep_points/hold/switch_module`, `model/config/capabilities/is_open`,
   `sweeps`/`events` queues carrying `Sweep`/`LinkEvent`).
-- Link contract (docstring of `Link`): `config` changes only on device confirmation (async; the simulator applies a pending span on its worker before the next sweep); `set_span` clamps silently, `ValueError` if start>=stop, `RuntimeError` if not open, resumes after `hold()`; `set_sweep_points(n)` is confirmed the same way and keeps start and span, `ValueError` if not encodable or above `sweep_points_max` (`link_api.check_sweep_points`), `RuntimeError` if not open; `open()` blocks for model+config (timeout 5 s) then emits `connected`, else `ConnectionError` + `error` event; queues are not cleared on close; sweeps may predate the latest `set_span`, so check `sweep.start_hz/stop_hz`; non-retunable links may raise `NotImplementedError`.
+- Link contract (docstring of `Link`): `config` changes only on device confirmation (async; the simulator applies a pending span on its worker before the next sweep); `set_span` clamps silently, `ValueError` if start>=stop, `RuntimeError` if not open, resumes after `hold()`; `set_sweep_points(n)` is confirmed the same way, keeps start and span and resumes after `hold()`, `ValueError` if not encodable or above `sweep_points_max` (`link_api.check_sweep_points`), `RuntimeError` if not open; `open()` blocks for model+config (timeout 5 s) then emits `connected`, else `ConnectionError` + `error` event; queues are not cleared on close; sweeps may predate the latest `set_span`, so check `sweep.start_hz/stop_hz`; non-retunable links may raise `NotImplementedError`.
 - `SimulatedLink(seed, sweep_points=112, sweep_interval_s=0.1, queue_size=64)`: WSUB1G+ (code 10, fw 03.39), daemon
   thread, queues drop the oldest item when full. `set_span` clamps to capabilities, builds a new `DeviceConfig`
   (step = round(span/(points-1))) and resumes after `hold()`. `set_sweep_points` is applied on the worker before the
-  next sweep (keeping start/stop); the simulator's max span does not shrink with more points (the device's does). `switch_module(False)` emits an `error` event (no expansion).
+  next sweep (keeping start, stop clamped to the new max span) and also resumes after `hold()`. Max span shrinks with
+  points like the device: `max_span_for(points)` = min(full range, 342.37 MHz × 512 / points) (959.95 MHz at 112,
+  342.37 MHz at 512); capabilities are re-resolved on every config change. `switch_module(False)` emits an `error` event (no expansion).
 - `generate(start_hz, stop_hz, points, t, seed) -> float32 dBm` is pure/deterministic: DVB-T ch 22/27/35 (-60 dBm,
   8 MHz), FM carriers in 563-831 MHz, intermittent carrier at `INTERMITTENT_HZ` (on while t % 4 < 2).
 - Synthetic spectrum: noise floor around −105 dBm ± jitter, DVB-T 8 MHz blocks, narrowband FM carriers, an optional
@@ -148,6 +161,7 @@ each with a `.json` sidecar):
   followed by `set_span` does not look like silence.
 - `set_sweep_points(n)` queues `protocol.set_sweep_points(n)` as a command confirmed by `#C2-F` (like `set_config`),
   so a following `set_span` waits for it; the new config resolves new capabilities (max span shrinks with points).
+  Like `set_config` it clears the worker's `holding` flag (CJ is followed by a new sweep dump, F2).
 - `set_span` clamps like the simulator (min span `max(points-1, 1000)` Hz because `C2-F` is in whole kHz) and keeps
   the device's current amplitude top/bottom.
 - Hardware test `tests/device/test_link_hardware.py` (`OPENCOORD_HARDWARE=1`, optional `OPENCOORD_PORT`): model +

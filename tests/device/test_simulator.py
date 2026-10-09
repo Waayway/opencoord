@@ -184,6 +184,36 @@ def test_set_sweep_points_is_confirmed_asynchronously_and_keeps_span(link: Simul
         pytest.fail("no 512-point sweep")
 
 
+def test_more_sweep_points_shrink_the_max_span(link: SimulatedLink) -> None:
+    link.open()  # starts at the full 50 kHz - 960 MHz span
+    link.set_sweep_points(512)
+    deadline = time.monotonic() + 2
+    while link.config is not None and link.config.sweep_points != 512:
+        assert time.monotonic() < deadline, "sweep points never confirmed"
+        time.sleep(0.005)
+    cfg, caps = link.config, link.capabilities
+    assert cfg is not None and caps is not None
+    assert cfg.max_span_hz == caps.max_span_hz == 342_370_000
+    assert cfg.stop_hz - cfg.start_hz <= 342_370_000  # the span was clamped
+    link.set_span(100 * MHZ, 900 * MHZ)
+    wait_for_config(link, 100 * MHZ)
+    assert link.config is not None and link.config.stop_hz <= 100 * MHZ + 342_370_000
+
+
+def test_set_sweep_points_resumes_after_hold(link: SimulatedLink) -> None:
+    link.open()
+    link.hold()
+    time.sleep(0.05)
+    while not link.sweeps.empty():
+        link.sweeps.get_nowait()
+    link.set_sweep_points(512)
+    for _ in range(50):
+        if len(link.sweeps.get(timeout=2).dbm) == 512:
+            break
+    else:
+        pytest.fail("no 512-point sweep after hold")
+
+
 def test_set_sweep_points_errors(link: SimulatedLink) -> None:
     with pytest.raises(RuntimeError):
         link.set_sweep_points(512)

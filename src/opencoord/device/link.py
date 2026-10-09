@@ -524,8 +524,10 @@ class SerialLink:
                     last_data = now
                     if cmd.kind == "hold":
                         holding = True
-                    elif cmd.kind == "set_config":
-                        holding = False  # a new config resumes the sweep dump (seen on hardware)
+                    elif cmd.confirmed_by_config:
+                        # A new config resumes the sweep dump (seen on hardware for set_config;
+                        # CJ is followed by a new dump too, F2).
+                        holding = False
             elif now - sent_at > self._command_timeout:
                 if not retried:
                     log.debug("no #C2-F after %s, resending", in_flight.kind)

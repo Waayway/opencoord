@@ -18,6 +18,7 @@ from opencoord.device.link_api import Link, LinkEvent
 from opencoord.device.models import Capabilities
 from opencoord.device.protocol import make_sweep
 from opencoord.device.scanner import (
+    MAX_RETUNES,
     PRESETS,
     Resolution,
     ScanProgress,
@@ -36,19 +37,33 @@ MHZ = 1_000_000
 class ManualLink:
     """A ``Link`` whose device confirms and sweeps only when the test says so."""
 
-    def __init__(self, *, points: int = 112, max_span_hz: int = 959_950_000) -> None:
-        self.sweeps: queue.Queue[Sweep] = queue.Queue(maxsize=64)
+    def __init__(
+        self,
+        *,
+        points: int = 112,
+        max_span_hz: int | None = None,
+        model_code: int = 10,
+        span: tuple[int, int] = (431 * MHZ, 441 * MHZ),
+    ) -> None:
+        self.sweeps: queue.Queue[Sweep] = queue.Queue(maxsize=256)
         self.events: queue.Queue[LinkEvent] = queue.Queue(maxsize=64)
         self.requests: list[tuple[str, int, int]] = []
-        self._points = points
-        self._max_span = max_span_hz
-        self._model = ModelInfo(10, None, "03.39")
-        self._config = self._make(431 * MHZ, 441 * MHZ, points)
+        self.emitted: list[Sweep] = []
+        self._fixed_max_span = max_span_hz
+        self._model = ModelInfo(model_code, None, "03.39")
+        self._config = self._make(*span, points)
         self._pending: list[tuple[str, int, int]] = []
         self.open_ = True
 
+    def max_span(self, points: int) -> int:
+        """Like the WSUB1G+: 959.95 MHz at 112 points, 342.37 MHz at 512."""
+        if self._fixed_max_span is not None:
+            return self._fixed_max_span
+        return min(959_950_000, 342_370_000 * 512 // points)
+
     def _make(self, start: int, stop: int, points: int) -> DeviceConfig:
         start = start // 1000 * 1000  # C2-F is in kHz; the device truncates the step
+        stop = min(stop, start + self.max_span(points))
         return DeviceConfig(
             start_hz=start,
             step_hz=(stop - start) // (points - 1),
@@ -59,7 +74,7 @@ class ManualLink:
             mode=0,
             min_hz=50_000,
             max_hz=960 * MHZ,
-            max_span_hz=self._max_span,
+            max_span_hz=self.max_span(points),
             rbw_hz=None,
             amp_offset_db=0.0,
             calculator_mode=0,
@@ -88,7 +103,8 @@ class ManualLink:
         self.open_ = False
 
     def set_span(self, start_hz: int, stop_hz: int) -> None:
-        stop_hz = min(stop_hz, start_hz + self._max_span)
+        # Clamped against the capabilities at call time, like the real links.
+        stop_hz = min(stop_hz, start_hz + self.capabilities.max_span_hz)
         self.requests.append(("span", start_hz, stop_hz))
         self._pending.append(("span", start_hz, stop_hz))
 
@@ -124,12 +140,26 @@ class ManualLink:
                 samples[i] = peak
         sweep = make_sweep(cfg, samples, time.time())
         self.sweeps.put_nowait(sweep)
+        self.emitted.append(sweep)
         return sweep
 
 
 def test_manual_link_is_a_link() -> None:
     link: Link = ManualLink()
     assert link.is_open
+
+
+def drive(link: ManualLink, scanner: SegmentedScanner, sweeps: int) -> ScanProgress:
+    """Confirm and feed ``sweeps`` sweeps per step until the scan (and restore) is done."""
+    p = scanner.step()
+    for _ in range(1000):
+        if p.done:
+            return p
+        link.confirm()
+        for _ in range(sweeps):
+            link.emit()
+        p = scanner.step()
+    raise AssertionError(f"scan never finished: {p}")
 
 
 class Clock:
@@ -195,15 +225,13 @@ def test_stitch_concatenates_and_keeps_max_in_overlap() -> None:
     assert out.dbm.dtype == np.float32 and out.freqs_hz.dtype == np.float64
 
 
-def test_stitch_aligns_offset_axes_to_a_common_grid() -> None:
-    a = _trace(0, 1000, [-100] * 10)
-    b = _trace(8_300, 1000, [-50] * 10)  # not on a's grid
-    out = stitch([a, b])
-    assert np.all(np.diff(out.freqs_hz) > 0)
-    assert out.freqs_hz[0] == 0 and abs(out.freqs_hz[-1] - 17_300) <= 500
-    steps = np.diff(out.freqs_hz)
-    assert np.allclose(steps, 1000)  # no gaps, no duplicates
-    assert float(out.dbm[8]) == -50  # overlap keeps the max
+def test_stitch_keeps_measured_frequencies_of_offset_axes() -> None:
+    a = _trace(0, 1000, [-100] * 10)  # 0..9000
+    b = _trace(8_300, 1000, [-50] * 10)  # 8300..17300, not on a's grid
+    out = stitch([b, a])  # order does not matter
+    assert list(out.freqs_hz) == [*range(0, 10_000, 1000), *range(10_300, 18_000, 1000)]
+    assert float(out.dbm[8]) == -50 and float(out.dbm[9]) == -50  # overlap merged, max kept
+    assert float(out.dbm[7]) == -100
 
 
 def test_stitch_single_trace_is_unchanged() -> None:
@@ -245,9 +273,11 @@ def test_discards_first_sweep_after_reconfig_then_max_holds_n() -> None:
     for i in range(preset.sweeps_per_segment):
         link.emit(level=-100.0, peak_hz=475 * MHZ, peak=-50.0 - i)
     p = scanner.step()
-    assert p.done and p.fraction == 1.0
+    assert not p.done and p.fraction == 1.0  # restoring the device's span
     result = scanner.result
     assert result is not None and p.partial is result
+    link.confirm()
+    assert scanner.step().done
     assert float(result.dbm.max()) == -50.0  # the 0 dBm discarded sweep never shows
     assert result.start_hz == 470 * MHZ and abs(result.stop_hz - 480 * MHZ) < 200_000
     assert len(result.dbm) == preset.sweep_points
@@ -274,7 +304,7 @@ def test_segments_advance_left_to_right_with_partial_traces() -> None:
     stops: list[int] = []
     fractions: list[float] = []
     p = scanner.step()
-    while not p.done:
+    while scanner.result is None:
         link.confirm()
         for _ in range(preset.sweeps_per_segment + 1):
             link.emit()
@@ -288,6 +318,27 @@ def test_segments_advance_left_to_right_with_partial_traces() -> None:
     assert [r[1] for r in link.requests[:count]] == [s.start_hz for s in scanner.segments]
 
 
+def test_old_axis_sweep_after_next_segment_is_confirmed_is_ignored() -> None:
+    link = ManualLink()
+    scanner = SegmentedScanner(link, 470 * MHZ, 530 * MHZ, Resolution.FAST)
+    scanner.step()
+    link.confirm()
+    link.emit()  # discarded
+    stale = link.emit()  # collected: segment 0 done, segment 1 requested
+    p = scanner.step()
+    assert p.segment_index == 1
+    link.confirm()
+    link.sweeps.put_nowait(stale)  # a segment-0 sweep arriving late
+    link.emit(level=0.0)  # first segment-1 sweep: discarded
+    p = scanner.step()
+    assert p.segment_index == 1 and p.fraction == pytest.approx(1 / p.segment_count)
+    link.emit()
+    p = scanner.step()
+    assert p.segment_index == 2  # stale sweep did not count as segment 1's discard or data
+    partial = p.partial
+    assert partial is not None and float(partial.dbm.max()) < -50
+
+
 def test_changes_sweep_points_and_restores_the_device_afterwards() -> None:
     link = ManualLink()
     original = link.config
@@ -296,15 +347,46 @@ def test_changes_sweep_points_and_restores_the_device_afterwards() -> None:
     scanner = SegmentedScanner(link, 470 * MHZ, 500 * MHZ, Resolution.NORMAL)
     p = scanner.step()
     assert link.requests[0] == ("points", preset.sweep_points, 0)
-    while not p.done:
+    while scanner.result is None:
         link.confirm()
         for _ in range(preset.sweeps_per_segment + 1):
             link.emit()
         p = scanner.step()
-    assert scanner.result is not None
-    assert link.requests[-2:] == [("points", 112, 0), ("span", original.start_hz, original.stop_hz)]
+    # Restore is phased: points first, the span only once the points are confirmed.
+    assert not p.done and link.requests[-1] == ("points", 112, 0)
+    assert not scanner.step().done
     link.confirm()
-    assert link.config.sweep_points == 112 and link.config.start_hz == 431 * MHZ
+    p = scanner.step()
+    assert not p.done and link.requests[-1] == ("span", original.start_hz, original.stop_hz)
+    link.confirm()
+    assert scanner.step().done
+    assert link.config == original
+
+
+def test_restores_a_span_wider_than_the_scan_points_allow() -> None:
+    # Found at 470-960 MHz / 112 points; at 512 points the max span is only 342 MHz.
+    link = ManualLink(span=(470 * MHZ, 960 * MHZ))
+    original = link.config
+    scanner = SegmentedScanner(link, 600 * MHZ, 650 * MHZ, Resolution.NORMAL)
+    p = drive(link, scanner, PRESETS[Resolution.NORMAL].sweeps_per_segment + 1)
+    assert p.done and scanner.result is not None
+    assert link.config == original
+    assert link.config.stop_hz > 950 * MHZ
+
+
+def test_preset_points_are_clamped_to_the_device_keeping_the_bin_width() -> None:
+    link = ManualLink(model_code=3)  # WSUB1G: 112 points max
+    assert link.capabilities.sweep_points_max == 112
+    preset = PRESETS[Resolution.NORMAL]
+    scanner = SegmentedScanner(link, 470 * MHZ, 960 * MHZ, Resolution.NORMAL)
+    assert scanner.sweep_points == 112
+    bin_hz = preset.segment_span_hz / (preset.sweep_points - 1)
+    seg = scanner.segments[0]
+    assert (seg.stop_hz - seg.start_hz) / 111 == pytest.approx(bin_hz, rel=0.01)
+    p = drive(link, scanner, preset.sweeps_per_segment + 1)
+    assert p.done and scanner.result is not None
+    assert not any(r[0] == "points" for r in link.requests)
+    assert scanner.estimate_seconds() > 0
 
 
 def test_cancel_restores_and_finishes() -> None:
@@ -312,16 +394,18 @@ def test_cancel_restores_and_finishes() -> None:
     scanner = SegmentedScanner(link, 470 * MHZ, 960 * MHZ, Resolution.FAST)
     scanner.step()
     scanner.cancel()
-    p = scanner.step()
-    assert p.done and scanner.result is None
     assert link.requests[-1][0:2] == ("span", 431 * MHZ)
+    assert not scanner.step().done
+    link.confirm()
+    p = scanner.step()
+    assert p.done and scanner.result is None and not p.stalled
     n = len(link.requests)
     scanner.cancel()
     scanner.step()
     assert len(link.requests) == n  # restores once
 
 
-def test_rerequests_a_segment_that_does_not_settle() -> None:
+def test_rerequests_a_segment_that_does_not_settle_then_stalls() -> None:
     link = ManualLink()
     clock = Clock()
     scanner = SegmentedScanner(
@@ -334,17 +418,29 @@ def test_rerequests_a_segment_that_does_not_settle() -> None:
     clock.t = 5.1
     scanner.step()
     assert link.requests == [("span", 470 * MHZ, 480 * MHZ)] * 2
+    for _ in range(MAX_RETUNES):
+        clock.t += 5.1
+        p = scanner.step()
+    assert p.stalled and not p.done
+    assert link.requests[-1][0:2] == ("span", 431 * MHZ)  # restoring
+    assert link.requests.count(("span", 470 * MHZ, 480 * MHZ)) == 1 + MAX_RETUNES
+    link.confirm()
+    p = scanner.step()
+    assert p.done and p.stalled and scanner.result is None
 
 
 def test_overview_is_one_clamped_sweep_at_current_points() -> None:
     link = ManualLink(max_span_hz=300 * MHZ)
     scanner = SegmentedScanner.overview(link, 470 * MHZ, 960 * MHZ)
+    assert scanner.range_hz == (470 * MHZ, 770 * MHZ)
     assert [(s.start_hz, s.stop_hz) for s in scanner.segments] == [(470 * MHZ, 770 * MHZ)]
     p = scanner.step()
     assert link.requests == [("span", 470 * MHZ, 770 * MHZ)]  # no sweep-point change
     link.confirm()
     link.emit(level=0.0)  # discarded
     link.emit(level=-90.0)
+    scanner.step()
+    link.confirm()
     p = scanner.step()
     assert p.done and scanner.result is not None
     assert len(scanner.result.dbm) == 112 and float(scanner.result.dbm.max()) == -90.0
@@ -374,6 +470,25 @@ def test_range_is_clamped_to_the_device_and_validated() -> None:
     link.close()
     with pytest.raises(RuntimeError):
         SegmentedScanner(link, 470 * MHZ, 480 * MHZ, Resolution.FAST)
+
+
+@pytest.mark.parametrize("resolution", list(Resolution))
+def test_stitched_frequencies_are_measured_frequencies(resolution: Resolution) -> None:
+    link = ManualLink()
+    scanner = SegmentedScanner(link, 470 * MHZ, 960 * MHZ, resolution)
+    drive(link, scanner, PRESETS[resolution].sweeps_per_segment + 1)
+    result = scanner.result
+    assert result is not None
+    measured = np.unique(np.concatenate([s.freqs_hz for s in link.emitted]))
+    i = np.clip(np.searchsorted(measured, result.freqs_hz), 1, len(measured) - 1)
+    err = np.minimum(
+        np.abs(measured[i] - result.freqs_hz), np.abs(measured[i - 1] - result.freqs_hz)
+    )
+    assert float(err.max()) < 1000  # exact in fact; 1 kHz is the device's tuning granularity
+    assert np.all(np.diff(result.freqs_hz) > 0)
+    step = PRESETS[resolution].segment_span_hz / (PRESETS[resolution].sweep_points - 1)
+    assert float(np.max(np.diff(result.freqs_hz))) < 1.5 * step  # no gaps at segment joins
+    assert result.start_hz == 470 * MHZ and abs(result.stop_hz - 960 * MHZ) <= step
 
 
 # --- end to end against the simulator ----------------------------------------------------------

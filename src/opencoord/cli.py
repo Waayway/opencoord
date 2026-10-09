@@ -256,11 +256,13 @@ def _scan(link: Link, args: argparse.Namespace) -> int:
     while not progress.done:
         if time.monotonic() > deadline:
             scanner.cancel()
+            _finish_restore(scanner)
             raise CliError(f"scan stalled at segment {progress.segment_index + 1}")
         time.sleep(_SCAN_POLL_S)
         progress = scanner.step()
     trace = scanner.result
-    assert trace is not None
+    if progress.stalled or trace is None:
+        raise CliError(f"scan stalled at segment {progress.segment_index + 1}")
     elapsed = time.monotonic() - began
     if args.csv is not None:
         with args.csv.open("w", newline="") as f:
@@ -275,6 +277,13 @@ def _scan(link: Link, args: argparse.Namespace) -> int:
         file=sys.stderr,
     )
     return EXIT_OK
+
+
+def _finish_restore(scanner: SegmentedScanner) -> None:
+    """Keep stepping a cancelled scan until the device has its old settings back (bounded)."""
+    deadline = time.monotonic() + _CONFIRM_TIMEOUT_S
+    while not scanner.step().done and time.monotonic() < deadline:
+        time.sleep(_SCAN_POLL_S)
 
 
 def _write_trace(

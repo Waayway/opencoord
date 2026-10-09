@@ -9,9 +9,12 @@ from pathlib import Path
 
 import pytest
 
-from opencoord import __version__
+from opencoord import __version__, cli
 from opencoord.cli import main
 from opencoord.device import protocol
+from opencoord.device.simulator import SimulatedLink
+
+MHZ = 1_000_000
 
 FIXTURES = Path(__file__).parent / "fixtures"
 F1 = (FIXTURES / "wsub1gplus_config_and_sweeps.bin").read_bytes()
@@ -114,6 +117,27 @@ def test_scan_writes_stitched_csv_and_summary(
     assert freqs == sorted(freqs)
     err = capsys.readouterr().err
     assert "fast" in err and "points" in err and "kHz bins" in err
+
+
+def test_scan_leaves_the_device_as_found(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    created: list[SimulatedLink] = []
+
+    def make() -> SimulatedLink:
+        created.append(SimulatedLink(sweep_interval_s=0.005))
+        return created[-1]
+
+    monkeypatch.setattr(cli, "SimulatedLink", make)
+    args = ["--simulator", "scan", "--start", "470", "--stop", "560", "--resolution", "normal"]
+    assert main([*args, "--csv", str(tmp_path / "s.csv")]) == 0
+    link = created[0]
+    assert not link.is_open
+    cfg = link.config
+    assert cfg is not None
+    # The simulator starts at 50 kHz - 960 MHz / 112 points; Normal scans at 512 points, where
+    # the max span is only 342 MHz, so this also checks the restore is phased.
+    assert cfg.sweep_points == 112
+    assert (cfg.start_hz, cfg.stop_hz) == (50_000, 50_000 + 111 * cfg.step_hz)
+    assert cfg.stop_hz > 959 * MHZ
 
 
 def test_scan_rejects_bad_range_and_resolution() -> None:

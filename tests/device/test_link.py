@@ -85,12 +85,15 @@ class FakeSerial:
 def config_line(
     start_khz: int, step_hz: int, top: int = -10, bottom: int = -120, points: int = 112
 ) -> bytes:
-    return b"#C2-F:%07d,%07d,%04d,%04d,%04d,0,000,0000050,0960000,0959950,00110,0000,004\r\n" % (
+    # Max span shrinks with points like the WSUB1G+ (959950 kHz at 112, 342370 kHz at 512).
+    span_khz = 959_950 if points == 112 else 342_370 * 512 // points
+    return b"#C2-F:%07d,%07d,%04d,%04d,%04d,0,000,0000050,0960000,%07d,00110,0000,004\r\n" % (
         start_khz,
         step_hz,
         top,
         bottom,
         points,
+        span_khz,
     )
 
 
@@ -104,6 +107,7 @@ _SET_CONFIG = re.compile(rb"C2-F:(\d{7}),(\d{7}),(-?\d{3,4}),(-?\d{3,4})")
 def device(*, ignore_set_config: int = 0) -> Responder:
     """A responder that answers C0 with F1 and echoes set_config like the real device (F3)."""
     ignored = [ignore_set_config]
+    points = [112]
 
     def respond(cmd: bytes) -> bytes:
         if cmd == C0:
@@ -114,11 +118,12 @@ def device(*, ignore_set_config: int = 0) -> Responder:
                 ignored[0] -= 1
                 return b""
             start, stop = int(m[1]), int(m[2])
-            step = round((stop - start) * 1000 / 111)
-            return config_line(start, step, int(m[3]), int(m[4])) + sweep_frame()
+            step = round((stop - start) * 1000 / (points[0] - 1))
+            line = config_line(start, step, int(m[3]), int(m[4]), points=points[0])
+            return line + (sweep_frame() if points[0] == 112 else b"")
         if cmd.startswith(b"#\x05CJ"):  # set sweep points: the device keeps start and span
-            points = cmd[4] * 16 + 16
-            return config_line(431_000, round(10_000_000 / (points - 1)), points=points)
+            points[0] = cmd[4] * 16 + 16
+            return config_line(431_000, round(10_000_000 / (points[0] - 1)), points=points[0])
         return b""
 
     return respond
@@ -505,7 +510,7 @@ def test_set_sweep_points_waits_for_the_config_echo(links: list[SerialLink]) -> 
         protocol.set_config(470 * MHZ, 700 * MHZ, -10, -120),
     ]
     caps = link.capabilities
-    assert caps is not None and caps.max_span_hz == 959_950_000
+    assert caps is not None and caps.max_span_hz == 342_370_000  # re-resolved from the echo
 
 
 def test_set_sweep_points_confirmed_and_validated(links: list[SerialLink]) -> None:

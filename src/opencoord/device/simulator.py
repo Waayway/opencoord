@@ -40,6 +40,9 @@ INTERMITTENT_PERIOD_S = 4.0  # on for the first half of each period
 _CARRIER_HALF_WIDTH_HZ = 150_000.0
 _NOISE_JITTER_DB = 1.5
 _DEFAULT_POINTS = 112
+# Max span shrinks with the sweep points on the WSUB1G+ (959950 kHz at 112, 342370 kHz at 512);
+# the simulator scales the 512-point value inversely with points, capped at the full range.
+_MAX_SPAN_512_HZ = 342_370_000
 _QUEUE_SIZE = 64
 
 
@@ -79,6 +82,12 @@ def generate(
         power += 10.0 ** (peak / 10.0) * np.exp(-0.5 * x * x * 4.0)
 
     return (10.0 * np.log10(power)).astype(np.float32)
+
+
+def max_span_for(points: int) -> int:
+    """The simulated device's max span at ``points`` points per sweep."""
+    hint = models.MODELS[10]
+    return min(hint.max_hz - hint.min_hz, _MAX_SPAN_512_HZ * 512 // points)
 
 
 class SimulatedLink:
@@ -186,6 +195,7 @@ class SimulatedLink:
         check_sweep_points(points, caps)
         with self._lock:
             self._pending_points = points
+        self._holding.clear()  # like set_span, a new setting resumes sweeping
 
     def hold(self) -> None:
         self._holding.set()
@@ -208,7 +218,7 @@ class SimulatedLink:
             mode=0,
             min_hz=hint.min_hz,
             max_hz=hint.max_hz,
-            max_span_hz=hint.max_hz - hint.min_hz,
+            max_span_hz=max_span_for(self._points),
             rbw_hz=None,
             amp_offset_db=0.0,
             calculator_mode=0,
@@ -232,11 +242,15 @@ class SimulatedLink:
                 pending, self._pending = self._pending, None
                 points, self._pending_points = self._pending_points, None
                 if points is not None and self._config is not None:
-                    self._points = points  # keeps start and span, like the device
-                    self._config = self._make_config(self._config.start_hz, self._config.stop_hz)
+                    self._points = points  # keeps start and span (within the new max span)
+                    start = self._config.start_hz
+                    stop = min(self._config.stop_hz, start + max_span_for(points))
+                    self._config = self._make_config(start, stop)
                 if pending is not None:
                     self._config = self._make_config(*pending)  # the device "echoes" #C2-F
                 config = self._config
+                if (points is not None or pending is not None) and self._model is not None:
+                    self._capabilities = models.resolve(self._model, config)
             if not self._holding.is_set():
                 assert config is not None
                 now = time.monotonic() - t0

@@ -56,11 +56,13 @@ class Link(Protocol):
     - ``set_span`` silently clamps to the capabilities (and to at least one step of span). It raises
       ``ValueError`` if ``start_hz >= stop_hz`` and ``RuntimeError`` if the link is not open. It
       also resumes sweeping after ``hold()``.
-    - ``set_sweep_points(n)`` changes the number of points per sweep, keeping start and span; it is
-      confirmed asynchronously like ``set_span`` (``config.sweep_points`` changes when the device
-      confirms). It raises ``ValueError`` for a count the device cannot take (not encodable, or
-      above ``capabilities.sweep_points_max``) and ``RuntimeError`` if the link is not open. On
-      the real device more points also lower ``capabilities.max_span_hz`` (342.37 MHz at 512).
+    - ``set_sweep_points(n)`` changes the number of points per sweep, keeping start and span
+      (clamped to the new max span); it is confirmed asynchronously like ``set_span``
+      (``config.sweep_points`` changes when the device confirms) and, like ``set_span``, resumes
+      sweeping after ``hold()``. It raises ``ValueError`` for a count the device cannot take (not
+      encodable, or above ``capabilities.sweep_points_max``) and ``RuntimeError`` if the link is
+      not open. More points lower ``capabilities.max_span_hz`` (959.95 MHz at 112, 342.37 MHz at
+      512 on the WSUB1G+), so set the points before a span that depends on it.
     - ``hold()`` pauses sweeping; ``switch_module(main)`` selects the main or expansion module.
     - Links that cannot retune (e.g. a replay of a recording) may raise ``NotImplementedError``
       from ``set_span``, ``hold`` and ``switch_module``.

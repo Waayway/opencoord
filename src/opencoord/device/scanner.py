@@ -9,7 +9,8 @@ It is driven by ``step()``, which never blocks: it drains whatever sweeps the li
 advances the state machine and returns a ``ScanProgress`` snapshot. The UI calls it once per
 frame; a CLI or worker thread loops on it with a short sleep. While a scan runs it owns the link
 (it consumes ``link.sweeps``). When it finishes or is cancelled it puts the device back to the
-sweep-point count and span it found.
+sweep-point count and span it found: first the points (which change the device's max span), then
+the span, each confirmed before ``step()`` reports ``done``.
 """
 
 from __future__ import annotations
@@ -21,9 +22,9 @@ import queue
 import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
+from typing import Literal
 
 import numpy as np
-import numpy.typing as npt
 
 from opencoord.core.types import DeviceConfig, Sweep, Trace
 from opencoord.device.link_api import Link
@@ -36,6 +37,8 @@ _MHZ = 1_000_000
 #: step (``C2-F`` works in whole kHz) can never open a gap at a segment edge.
 OVERLAP_STEPS = 2
 DEFAULT_SETTLE_TIMEOUT_S = 10.0
+#: Retunes of a segment that does not settle before the scan is abandoned as stalled.
+MAX_RETUNES = 3
 
 
 class Resolution(enum.StrEnum):
@@ -79,6 +82,8 @@ PRESETS: dict[Resolution, ScanPreset] = {
 #: Sweep rate assumed for an overview (one wide sweep at the device's current points; 112 points
 #: over 100 MHz measured 1.71/s).
 OVERVIEW_SWEEPS_PER_S = 1.7
+#: Fastest sweep rate measured (112 points); caps the estimate when a preset's points are reduced.
+_MAX_SWEEPS_PER_S = 3.35
 
 
 @dataclass(frozen=True)
@@ -89,13 +94,19 @@ class Segment:
 
 @dataclass(frozen=True, eq=False)
 class ScanProgress:
-    """Snapshot returned by ``step()``; ``partial`` is the stitched trace of finished segments."""
+    """Snapshot returned by ``step()``; ``partial`` is the stitched trace of finished segments.
+
+    ``done`` becomes true only once the device is back at the settings it had before the scan (or
+    restoring gave up). ``stalled`` means a segment never settled after ``MAX_RETUNES`` retunes;
+    the scan was then abandoned (``result`` stays ``None``).
+    """
 
     segment_index: int
     segment_count: int
     fraction: float
     partial: Trace | None
     done: bool
+    stalled: bool = False
 
 
 def plan_segments(start_hz: int, stop_hz: int, span_hz: int, points: int) -> list[Segment]:
@@ -125,26 +136,32 @@ def plan_segments(start_hz: int, stop_hz: int, span_hz: int, points: int) -> lis
 
 
 def stitch(traces: Sequence[Trace]) -> Trace:
-    """Merge segment traces onto one Hz grid (the finest step), keeping the max where they overlap.
+    """Join segment traces left to right, keeping every point's own frequency.
 
-    Each point goes to the nearest grid bin; bins no point fell into are left out.
+    A point of a later segment that lies within half a step of the joined trace so far (the
+    overlap) is merged into the nearest existing point, keeping the max level; the others are
+    appended. So every output frequency is a frequency the device actually measured.
     """
     if not traces:
         raise ValueError("nothing to stitch")
-    if len(traces) == 1:
-        only = traces[0]
-        return Trace(only.freqs_hz.copy(), only.dbm.copy(), "scan")
-    steps = [float(t.freqs_hz[-1] - t.freqs_hz[0]) / (len(t.freqs_hz) - 1) for t in traces]
-    step = min(steps)
-    origin = min(float(t.freqs_hz[0]) for t in traces)
-    bins = [np.rint((t.freqs_hz - origin) / step).astype(np.int64) for t in traces]
-    size = max(int(np.max(b)) for b in bins) + 1
-    held = np.full(size, -np.inf, dtype=np.float64)
-    for b, t in zip(bins, traces, strict=True):
-        np.maximum.at(held, b, t.dbm.astype(np.float64))
-    covered = np.flatnonzero(np.isfinite(held))
-    freqs: npt.NDArray[np.float64] = origin + covered.astype(np.float64) * step
-    return Trace(freqs, held[covered].astype(np.float32), "scan")
+    ordered = sorted(traces, key=lambda t: float(t.freqs_hz[0]))
+    freqs = ordered[0].freqs_hz.astype(np.float64)
+    dbm = ordered[0].dbm.astype(np.float32)
+    for t in ordered[1:]:
+        tail_step = float(freqs[-1] - freqs[-2]) if len(freqs) > 1 else 0.0
+        overlap = t.freqs_hz <= freqs[-1] + tail_step / 2
+        if overlap.any():
+            x = t.freqs_hz[overlap]
+            right = np.clip(np.searchsorted(freqs, x), 0, len(freqs) - 1)
+            left = np.clip(right - 1, 0, len(freqs) - 1)
+            nearest = np.where(np.abs(freqs[left] - x) <= np.abs(freqs[right] - x), left, right)
+            np.maximum.at(dbm, nearest, t.dbm[overlap].astype(np.float32))
+        freqs = np.concatenate([freqs, t.freqs_hz[~overlap].astype(np.float64)])
+        dbm = np.concatenate([dbm, t.dbm[~overlap].astype(np.float32)])
+    return Trace(freqs, dbm, "scan")
+
+
+_Phase = Literal["idle", "scanning", "restore_points", "restore_span", "done"]
 
 
 class SegmentedScanner:
@@ -179,13 +196,21 @@ class SegmentedScanner:
             self._segments = [Segment(start, min(stop, start + caps.max_span_hz))]
         else:
             preset = PRESETS[resolution]
-            self._points = preset.sweep_points
+            span, rate = preset.segment_span_hz, preset.sweeps_per_s
+            points = min(preset.sweep_points, max(caps.sweep_points_max, config.sweep_points))
+            if points != preset.sweep_points:
+                # The device cannot do the preset's points: keep the bin width with a narrower
+                # segment. Sweep time scales roughly with points, capped at the fastest measured.
+                span = round(preset.segment_span_hz * (points - 1) / (preset.sweep_points - 1))
+                rate = min(rate * preset.sweep_points / points, _MAX_SWEEPS_PER_S)
+            self._points = points
             self._sweeps_per_segment = preset.sweeps_per_segment
-            self._sweeps_per_s = preset.sweeps_per_s
-            self._segments = plan_segments(start, stop, preset.segment_span_hz, self._points)
+            self._sweeps_per_s = rate
+            self._segments = plan_segments(start, stop, span, points)
         self._original: DeviceConfig | None = None
-        self._started = False
-        self._finished = False
+        self._phase: _Phase = "idle"
+        self._stalled = False
+        self._retunes = 0
         self._index = 0
         self._discarded = False
         self._collected: list[Sweep] = []
@@ -193,6 +218,7 @@ class SegmentedScanner:
         self._partial: Trace | None = None
         self._result: Trace | None = None
         self._last_progress = 0.0
+        self._restore_from: DeviceConfig | None = None
 
     @classmethod
     def overview(
@@ -214,8 +240,19 @@ class SegmentedScanner:
         return list(self._segments)
 
     @property
+    def range_hz(self) -> tuple[int, int]:
+        """The range actually scanned, after clamping to the device (and, for an overview, to
+        its max span)."""
+        return self._segments[0].start_hz, self._segments[-1].stop_hz
+
+    @property
+    def sweep_points(self) -> int:
+        """Points per sweep used for the scan (the preset's, clamped to the device)."""
+        return self._points
+
+    @property
     def result(self) -> Trace | None:
-        """The stitched trace once the scan has completed (``None`` if cancelled)."""
+        """The stitched trace once every segment is in (``None`` if cancelled or stalled)."""
         return self._result
 
     def estimate_seconds(self) -> float:
@@ -223,36 +260,34 @@ class SegmentedScanner:
         return len(self._segments) * (self._sweeps_per_segment + 1) / self._sweeps_per_s
 
     def cancel(self) -> None:
-        """Stop scanning and restore the device; the next ``step()`` reports ``done``."""
-        if not self._finished:
-            self._finish()
+        """Stop scanning; ``step()`` then restores the device and reports ``done``."""
+        if self._phase in ("idle", "scanning"):
+            self._begin_restore()
 
     def step(self) -> ScanProgress:
-        """Drain queued sweeps, advance the scan and report progress. Never blocks."""
-        if self._finished:
-            return self._progress()
-        if not self._started:
-            self._started = True
+        """Drain queued sweeps, advance the scan (or the restore) and report progress.
+
+        Never blocks. Keep calling it until ``done``: after the last segment it still has to put
+        the device back (sweep points first, then the span, each confirmed by the device).
+        """
+        if self._phase == "idle":
+            self._phase = "scanning"
             self._original = self._link.config
             self._request()
-        while not self._finished:
+        while self._phase != "done":
             try:
                 sweep = self._link.sweeps.get_nowait()
             except queue.Empty:
                 break
-            self._accept(sweep)
-        if not self._finished and self._clock() - self._last_progress > self._settle_timeout:
-            seg = self._segments[self._index]
-            log.warning(
-                "segment %d-%d Hz did not settle in %.0f s, retuning",
-                seg.start_hz,
-                seg.stop_hz,
-                self._settle_timeout,
-            )
-            self._request()
+            if self._phase == "scanning":
+                self._accept(sweep)
+        if self._phase == "scanning":
+            self._check_settled()
+        elif self._phase != "done":
+            self._advance_restore()
         return self._progress()
 
-    # --- internals ---
+    # --- scanning ---
 
     def _request(self) -> None:
         """Tune to the current segment, dropping sweeps queued before the retune."""
@@ -269,6 +304,24 @@ class SegmentedScanner:
         self._discarded = False
         self._collected = []
         self._last_progress = self._clock()
+
+    def _check_settled(self) -> None:
+        if self._clock() - self._last_progress <= self._settle_timeout:
+            return
+        seg = self._segments[self._index]
+        if self._retunes >= MAX_RETUNES:
+            log.warning("segment %d-%d Hz never settled; scan stalled", seg.start_hz, seg.stop_hz)
+            self._stalled = True
+            self._begin_restore()
+            return
+        self._retunes += 1
+        log.warning(
+            "segment %d-%d Hz did not settle in %.0f s, retuning",
+            seg.start_hz,
+            seg.stop_hz,
+            self._settle_timeout,
+        )
+        self._request()
 
     def _matches(self, axis_start: int, axis_stop: int, points: int) -> bool:
         seg = self._segments[self._index]
@@ -296,36 +349,86 @@ class SegmentedScanner:
         self._held.append(Trace(self._collected[0].freqs_hz, held, "segment"))
         self._partial = stitch(self._held)
         self._collected = []
+        self._retunes = 0
         if self._index + 1 < len(self._segments):
             self._index += 1
             self._request()
         else:
             self._result = self._partial
-            self._finish()
+            self._begin_restore()
 
-    def _finish(self) -> None:
-        """Mark done and put the device back to the points and span it had before the scan."""
-        self._finished = True
+    # --- restoring the device ---
+
+    def _begin_restore(self) -> None:
+        """Put the device back: sweep points first (that changes the max span), then the span."""
         original = self._original
+        self._last_progress = self._clock()
         if original is None or not self._link.is_open:
+            self._phase = "done"
             return
+        config = self._link.config
+        # Configs are replaced on every confirmation, so a restore step counts only once the
+        # config object differs from the one current when its command was sent (earlier queued
+        # retunes may still be confirmed in between).
+        self._restore_from = config
         try:
-            if self._points != original.sweep_points:
+            if self._points != original.sweep_points or (
+                config is not None and config.sweep_points != original.sweep_points
+            ):
                 self._link.set_sweep_points(original.sweep_points)
-            self._link.set_span(original.start_hz, original.stop_hz)
+                self._phase = "restore_points"
+            else:
+                self._link.set_span(original.start_hz, original.stop_hz)
+                self._phase = "restore_span"
         except (RuntimeError, ValueError):
             log.warning("could not restore the device settings after the scan", exc_info=True)
+            self._phase = "done"
+
+    def _advance_restore(self) -> None:
+        original = self._original
+        config = self._link.config
+        assert original is not None
+        if not self._link.is_open:
+            self._phase = "done"
+            return
+        fresh = config is not None and config is not self._restore_from
+        if fresh and config is not None and config.sweep_points == original.sweep_points:
+            if self._phase == "restore_points":
+                try:
+                    self._link.set_span(original.start_hz, original.stop_hz)
+                except (RuntimeError, ValueError):
+                    log.warning("could not restore the span after the scan", exc_info=True)
+                    self._phase = "done"
+                    return
+                self._phase = "restore_span"
+                self._restore_from = config
+                self._last_progress = self._clock()
+                return
+            tol = max(original.step_hz, _KHZ)
+            if (
+                abs(config.start_hz - original.start_hz) <= tol
+                and abs(config.stop_hz - original.stop_hz) <= tol
+            ):
+                self._phase = "done"
+                return
+        if self._clock() - self._last_progress > self._settle_timeout:
+            log.warning("the device did not confirm its restored settings; giving up")
+            self._phase = "done"
 
     def _progress(self) -> ScanProgress:
         count = len(self._segments)
-        if self._finished:
-            fraction = 1.0 if self._result is not None else self._index / count
-            return ScanProgress(self._index, count, fraction, self._partial, True)
-        part = len(self._collected) / self._sweeps_per_segment
-        return ScanProgress(self._index, count, (self._index + part) / count, self._partial, False)
+        done = self._phase == "done"
+        if self._result is not None:
+            fraction = 1.0
+        elif self._phase in ("idle", "scanning"):
+            fraction = (self._index + len(self._collected) / self._sweeps_per_segment) / count
+        else:
+            fraction = self._index / count
+        return ScanProgress(self._index, count, fraction, self._partial, done, self._stalled)
 
 
 __all__ = [
+    "MAX_RETUNES",
     "OVERVIEW_SWEEPS_PER_S",
     "PRESETS",
     "Resolution",
