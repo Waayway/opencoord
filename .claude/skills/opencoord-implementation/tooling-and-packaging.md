@@ -60,7 +60,7 @@ Base: `ghcr.io/astral-sh/uv:python3.13-bookworm-slim`.
 ## GitHub Actions (`.github/workflows/`)
 | Workflow | What it runs |
 |---|---|
-| `ci.yml` | setup-uv → ruff, mypy, pytest matrix (ubuntu/windows/macos × 3.11–3.14); UI smoke test under `xvfb-run` |
+| `ci.yml` | on push/PR, cancel-in-progress per ref. Jobs: `lint` (ruff check, ruff format --check, mypy); `test` (ubuntu/windows/macos x py 3.11-3.14, `uv sync --locked --python X` + `uv run --python X pytest -m "not ui and not hardware"`, overrides `.python-version`); `ui-smoke` (apt xvfb + mesa/X11 libs, `xvfb-run -a uv run pytest -m ui`). Actions: checkout@v4, setup-uv@v5 (cache on) |
 | `build.yml` | builds per OS: ubuntu-22.04 (+ `-arm`), windows-latest, macos-14 (+ Intel if available); uploads artifacts |
 | `nix.yml` | `nix flake check` + `nix build` on Linux/macOS |
 | `docker.yml` | build/test stages on PR; on tag, push the runtime image to `ghcr.io/waayway/opencoord` |
